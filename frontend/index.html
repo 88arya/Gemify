@@ -413,11 +413,11 @@
 
     /* ── Selected list ── */
     #selected-list-header {
+      position: relative;
       display: flex;
-      width: auto;
       align-items: center;
       gap: 12px;
-      padding: 0 30px 6px 30px;
+      padding: 0 130px 6px 30px;
       border-bottom: 1px solid #2a2a2a;
       margin: 0 -20px 4px -20px;
     }
@@ -425,24 +425,24 @@
     .sel-hdr-num { font-size: 0.72rem; color: #b3b3b3; min-width: 16px; flex-shrink: 0; }
     .sel-hdr-avatar-spacer { width: 32px; flex-shrink: 0; }
     .sel-hdr-artist { font-size: 0.72rem; color: #b3b3b3; flex: 1; }
-    #selection-count { font-size: 0.72rem; color: #b3b3b3; flex-shrink: 0; margin-left: auto; }
+    #selection-count { position: absolute; right: 30px; top: 0; bottom: 0; width: 100px; display: flex; align-items: center; justify-content: center; font-size: 0.72rem; color: #b3b3b3; }
     #recs-area { height: 260px; overflow: hidden; margin-bottom: 8px; padding: 0 20px; }
     #recs-list-header {
+      position: relative;
       display: flex;
-      width: auto;
       align-items: center;
       gap: 12px;
-      padding: 0 62px 6px 62px;
+      padding: 0 130px 6px 30px;
       border-bottom: 1px solid #2a2a2a;
-      margin: 0 -36px 4px -36px;
+      margin: 0 -20px 4px -20px;
     }
-    .recs-hdr-listeners { font-size: 0.72rem; color: #b3b3b3; flex-shrink: 0; min-width: 100px; text-align: center; }
-    #recs-list { width: 100%; padding: 0 16px; display: flex; flex-direction: column; }
+    #recs-list { width: 100%; padding: 0; display: flex; flex-direction: column; }
     .rec-row {
+      position: relative;
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 5px 10px;
+      padding: 5px 110px 5px 10px;
       border-radius: 8px;
       transition: background 0.15s;
       user-select: none;
@@ -450,9 +450,29 @@
       overflow: hidden;
     }
     .rec-row:hover { background: #252525; }
-    .rec-row-num { font-size: 0.72rem; color: #555; min-width: 16px; flex-shrink: 0; text-align: right; }
-    .rec-row-name { font-size: 0.85rem; color: #e0e0e0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .rec-row-listeners { font-size: 0.82rem; color: #aaa; flex-shrink: 0; min-width: 100px; text-align: center; }
+    .rec-row-num { font-size: 0.72rem; color: #b3b3b3; min-width: 16px; flex-shrink: 0; }
+    .recs-hdr-listeners {
+      position: absolute;
+      right: 30px;
+      top: 0; bottom: 0;
+      width: 100px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.72rem;
+      color: #b3b3b3;
+    }
+    .rec-row-listeners {
+      position: absolute;
+      right: 10px;
+      top: 0; bottom: 0;
+      width: 100px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.82rem;
+      color: #aaa;
+    }
 
     #selected-list {
       width: 100%;
@@ -615,6 +635,7 @@
     }
 
     .artist-row {
+      position: relative;
       display: flex;
       align-items: center;
       gap: 12px;
@@ -626,6 +647,8 @@
       min-width: 0;
       overflow: hidden;
     }
+
+    #selected-list .artist-row { padding-right: 110px; }
 
     .artist-row:hover { background: #252525; }
     .artist-row:hover .artist-row-add { opacity: 1; }
@@ -650,6 +673,19 @@
       transition: opacity 0.15s, background 0.15s, border-color 0.15s, color 0.15s;
       padding: 0;
     }
+
+    .selected-row-action {
+      position: absolute;
+      right: 10px;
+      top: 0;
+      bottom: 0;
+      width: 100px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #selected-list .artist-row-add { margin-left: 0; }
     .artist-row-add:hover {
       background: transparent;
       border-color: #fff;
@@ -660,6 +696,7 @@
       border-color: #c084fc;
       color: #000;
       font-size: 0.65rem;
+      opacity: 1;
     }
     .artist-row.selected .artist-row-add:hover {
       background: #c084fc;
@@ -937,7 +974,7 @@
   });
 
   async function init() {
-    await Promise.all([loadUser(), loadArtists(), loadAlbums()]);
+    await Promise.all([loadUser(), loadArtists(), loadAlbums(), loadSavedRecommendations()]);
   }
 
   // ── User profile ──
@@ -979,6 +1016,15 @@
     sessionStorage.clear();
     window.location.href = "/app";
   });
+
+  // ── Saved recommendations ──
+  async function loadSavedRecommendations() {
+    try {
+      const res = await fetch(`/saved-recommendations?spotify_id=${spotifyId}`);
+      const data = await res.json();
+      renderRecommendations(data.recommendations || []);
+    } catch {}
+  }
 
   // ── Albums sidebar ──
   async function loadAlbums() {
@@ -1061,23 +1107,40 @@
       const res = await fetch("/recommendations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ artists: artistNames })
+        body: JSON.stringify({ spotify_id: spotifyId, artists: artistNames })
       });
       const data = await res.json();
       clearInterval(msgInterval);
       const userArtistNames = new Set(allArtists.map(a => a.name.toLowerCase()));
       const filtered = (data.recommendations || []).filter(r => !userArtistNames.has(r.name.toLowerCase())).slice(0, 5);
-      renderRecommendations(filtered);
+      recsList.querySelector(".rec-loading")?.remove();
+      renderRecommendations(filtered, true);
     } catch {
       clearInterval(msgInterval);
       recsList.innerHTML = `<p style="color:#e74c3c;padding:16px">Failed to load recommendations.</p>`;
     }
   });
 
-  function renderRecommendations(recs) {
+  const _savedRecNames = new Set();
+
+  function renderRecommendations(recs, append = false) {
     const list = document.getElementById("recs-list");
-    list.innerHTML = "";
-    recs.forEach((rec, i) => list.appendChild(buildRecRow(rec, i)));
+    if (!append) {
+      list.innerHTML = "";
+      _savedRecNames.clear();
+    }
+    for (const rec of recs) {
+      if (_savedRecNames.has(rec.name.toLowerCase())) continue;
+      _savedRecNames.add(rec.name.toLowerCase());
+      list.appendChild(buildRecRow(rec, _savedRecNames.size));
+    }
+    renumberRecList();
+  }
+
+  function renumberRecList() {
+    document.querySelectorAll("#recs-list .rec-row").forEach((row, i) => {
+      row.querySelector(".rec-row-num").textContent = i + 1;
+    });
   }
 
   function formatListeners(n) {
@@ -1087,14 +1150,14 @@
     return n.toString();
   }
 
-  function buildRecRow(rec, index) {
+  function buildRecRow(rec) {
     const row = document.createElement("div");
     row.className = "rec-row";
-    const src = rec.image;
+    const src = rec.image || rec.image_url;
     const avatar = src
       ? `<img class="artist-row-avatar" src="${src}" alt="${rec.name}" onerror="this.outerHTML='<div class=\\'artist-row-avatar-initials\\'>${initials(rec.name)}</div>'" />`
       : `<div class="artist-row-avatar-initials">${initials(rec.name)}</div>`;
-    row.innerHTML = `<span class="rec-row-num">${index + 1}</span>${avatar}<span class="rec-row-name">${rec.name}</span><span class="rec-row-listeners">${formatListeners(rec.listeners)}</span>`;
+    row.innerHTML = `<span class="rec-row-num"></span>${avatar}<span class="rec-row-name">${rec.name}</span><span class="rec-row-listeners">${formatListeners(rec.listeners)}</span>`;
     return row;
   }
 
@@ -1254,7 +1317,7 @@
     const row = document.createElement("div");
     row.className = "artist-row selected";
     row.dataset.id = artist.id;
-    row.innerHTML = `<span class="selected-num">${num}</span>${avatar}<div class="artist-row-name">${artist.name}</div><button class="artist-row-add" title="Remove">✔</button>`;
+    row.innerHTML = `<span class="selected-num">${num}</span>${avatar}<div class="artist-row-name">${artist.name}</div><span class="selected-row-action"><button class="artist-row-add" title="Remove">✔</button></span>`;
     row.querySelector(".artist-row-add").addEventListener("click", e => {
       e.stopPropagation();
       deselectArtist(artist.id);
