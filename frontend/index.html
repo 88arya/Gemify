@@ -842,7 +842,7 @@
         <div id="dots-menu">
           <div id="dots-btn" tabindex="-1">•••</div>
           <div id="dots-dropdown">
-            <button id="btn-add-all"><span class="dots-btn-icon">+</span>Add all</button>
+            <button id="btn-add-all"><span class="dots-btn-icon">+</span>Add top 10</button>
             <button id="btn-remove-all"><span class="dots-btn-icon">−</span>Remove all</button>
           </div>
         </div>
@@ -1131,6 +1131,20 @@
 
   document.addEventListener("click", () => {
     document.getElementById("dots-dropdown").classList.remove("open");
+  });
+
+  document.getElementById("btn-add-all").addEventListener("click", () => {
+    for (const artist of allArtists) {
+      if (selected.size >= 10) break;
+      if (!selected.has(artist.id)) {
+        const row = document.querySelector(`#artist-list .artist-row[data-id="${artist.id}"]`);
+        selectArtist(artist, row);
+      }
+    }
+  });
+
+  document.getElementById("btn-remove-all").addEventListener("click", () => {
+    for (const artistId of [...selected.keys()]) deselectArtist(artistId);
   });
 
   // ── Artists ──
