@@ -489,10 +489,57 @@
       transform-origin: 50% 50%;
     }
 
-    #dots-btn:hover { color: #aaa; transform: scale(1.05); }
+    #dots-btn:hover { color: #fff; }
     #dots-btn:focus, #dots-btn:focus-visible { outline: none; box-shadow: none; }
-    #dots-dropdown button:focus, #dots-dropdown button:focus-visible { outline: none; box-shadow: none; }
 
+    #dots-dropdown {
+      display: none;
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      background: #282828;
+      min-width: 130px;
+      min-height: 90px;
+      border-radius: 4px;
+      z-index: 100;
+      overflow: hidden;
+    }
+
+    #dots-dropdown.open { display: flex; flex-direction: column; padding: 4px; gap: 2px; }
+
+    #dots-dropdown button {
+      flex: 1;
+      background: none;
+      border: none;
+      color: #ccc;
+      font-size: 0.82rem;
+      padding: 0 10px;
+      text-align: left;
+      cursor: pointer;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    #dots-dropdown button:hover { background: #3a3a3a; color: #fff; }
+
+    .dots-btn-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 1.5px solid #b3b3b3;
+      color: #b3b3b3;
+      font-size: 0.75rem;
+      line-height: 1;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+
+    #dots-dropdown button:hover .dots-btn-icon { border-color: #fff; color: #fff; }
 
     #btn-save {
       width: 48px;
@@ -794,6 +841,10 @@
         </button>
         <div id="dots-menu">
           <div id="dots-btn" tabindex="-1">•••</div>
+          <div id="dots-dropdown">
+            <button id="btn-add-all"><span class="dots-btn-icon">+</span>Add all</button>
+            <button id="btn-remove-all"><span class="dots-btn-icon">−</span>Remove all</button>
+          </div>
         </div>
       </div>
       <div id="selected-list-header">
@@ -1071,6 +1122,16 @@
     document.getElementById("album-list").prepend(buildAlbumEntry(album));
   }
 
+
+  // ── Dots menu ──
+  document.getElementById("dots-btn").addEventListener("click", e => {
+    e.stopPropagation();
+    document.getElementById("dots-dropdown").classList.toggle("open");
+  });
+
+  document.addEventListener("click", () => {
+    document.getElementById("dots-dropdown").classList.remove("open");
+  });
 
   // ── Artists ──
   async function loadArtists() {
