@@ -493,40 +493,6 @@
     #dots-btn:focus, #dots-btn:focus-visible { outline: none; box-shadow: none; }
     #dots-dropdown button:focus, #dots-dropdown button:focus-visible { outline: none; box-shadow: none; }
 
-    #dots-dropdown {
-      display: none;
-      position: absolute;
-      bottom: 100%;
-      left: 0;
-      background: #282828;
-      outline: none;
-      border: 1px solid #3a3a3a;
-      border-radius: 3px;
-      min-width: 130px;
-      z-index: 100;
-      flex-direction: column;
-      overflow: hidden;
-      padding: 2px;
-      gap: 1px;
-    }
-
-    #dots-dropdown.open { display: flex; }
-
-    #dots-dropdown div {
-      background: none;
-      border: none;
-      outline: none;
-      border-radius: 3px;
-      color: #ccc;
-      font-size: 0.82rem;
-      padding: 10px 14px;
-      text-align: left;
-      cursor: pointer;
-      transition: background 0.15s;
-      user-select: none;
-    }
-
-    #dots-dropdown div:hover { background: #3a3a3a; color: #fff; }
 
     #btn-save {
       width: 48px;
@@ -624,9 +590,9 @@
       width: 14px;
       height: 14px;
       border-radius: 50%;
-      border: 1.5px solid #fff;
+      border: 1.5px solid #b3b3b3;
       background: transparent;
-      color: #fff;
+      color: #b3b3b3;
       font-size: 0.75rem;
       line-height: 1;
       display: flex;
@@ -634,13 +600,13 @@
       justify-content: center;
       cursor: pointer;
       opacity: 0;
-      transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+      transition: opacity 0.15s, background 0.15s, border-color 0.15s, color 0.15s;
       padding: 0;
     }
     .artist-row-add:hover {
-      background: #fff;
+      background: transparent;
       border-color: #fff;
-      color: #000;
+      color: #fff;
     }
     .artist-row.selected .artist-row-add {
       background: #c084fc;
@@ -828,10 +794,6 @@
         </button>
         <div id="dots-menu">
           <div id="dots-btn" tabindex="-1">•••</div>
-          <div id="dots-dropdown">
-            <div id="btn-add-all" tabindex="-1">Add top 10</div>
-            <div id="btn-remove-all" tabindex="-1">Remove all</div>
-          </div>
         </div>
       </div>
       <div id="selected-list-header">
@@ -1109,40 +1071,6 @@
     document.getElementById("album-list").prepend(buildAlbumEntry(album));
   }
 
-  // ── Dots menu ──
-  document.getElementById("dots-btn").addEventListener("click", e => {
-    e.stopPropagation();
-    document.getElementById("dots-dropdown").classList.toggle("open");
-  });
-
-  document.addEventListener("click", () => {
-    document.getElementById("dots-dropdown").classList.remove("open");
-  });
-
-  // ── Add all / Remove all ──
-  document.getElementById("btn-add-all").addEventListener("click", () => {
-    for (const artist of allArtists) {
-      if (selected.size >= 10) break;
-      if (!selected.has(artist.id)) {
-        selected.set(artist.id, artist);
-        const row = document.querySelector(`#artist-list .artist-row[data-id="${artist.id}"]`);
-        if (row) { row.classList.add("selected"); row.querySelector(".artist-row-add").textContent = "✔"; }
-        addToSelectedList(artist);
-      }
-    }
-    updateSelectionCount();
-  });
-
-  document.getElementById("btn-remove-all").addEventListener("click", () => {
-    selected.clear();
-    document.getElementById("selected-list").innerHTML = "";
-    document.querySelectorAll("#artist-list .artist-row").forEach(r => {
-      r.classList.remove("selected");
-      const btn = r.querySelector(".artist-row-add");
-      if (btn) btn.textContent = "+";
-    });
-    updateSelectionCount();
-  });
 
   // ── Artists ──
   async function loadArtists() {
