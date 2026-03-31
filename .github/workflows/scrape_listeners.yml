@@ -1,0 +1,24 @@
+name: Monthly Listener Scrape
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'  # midnight UTC on the 1st of every month
+  workflow_dispatch:       # allow manual trigger from GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 psycopg2-binary python-dotenv
+
+      - name: Run scraper
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: python backend/scraper/scrape_listeners.py
