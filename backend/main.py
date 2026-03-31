@@ -100,7 +100,7 @@ def _get_sp(spotify_id: str):
 
 
 def _all_followed_artists(sp):
-    """Fetch all followed artists (paginated)."""
+    """All followed artists, paginated."""
     artists, after = [], None
     while True:
         resp = sp.current_user_followed_artists(limit=50, after=after)
@@ -113,7 +113,7 @@ def _all_followed_artists(sp):
 
 
 def _all_top_artists(sp, time_range: str, limit: int):
-    """Fetch top artists up to `limit`, paginating if limit > 50."""
+    """Top artists up to limit, paginated past 50."""
     artists, offset = [], 0
     while offset < limit:
         batch = min(50, limit - offset)
@@ -126,7 +126,7 @@ def _all_top_artists(sp, time_range: str, limit: int):
 
 
 def _all_top_tracks_ranked(sp, time_range: str, limit: int):
-    """Fetch top tracks and return (track_rank, artist) tuples, rank is 1-indexed."""
+    """Top tracks → [(rank, artist)], 1-indexed."""
     result, offset, rank = [], 0, 1
     while offset < limit:
         batch = min(50, limit - offset)
@@ -210,7 +210,7 @@ def _fetch_and_cache_artists_inner(spotify_id: str, sp):
     ordered = sorted(artist_map.values(), key=lambda x: x["score"], reverse=True)
 
     def cache_artists(artists_to_cache):
-        """Insert/update artist image URLs in the artists table using a fresh cursor."""
+        """Upsert images to artists table. Uses own cursor — avoids tx conflicts on shared conn."""
         to_insert = [a for a in artists_to_cache if a.get("image")]
         if not to_insert:
             return
@@ -362,7 +362,7 @@ class RecommendationsRequest(BaseModel):
 
 
 def _lastfm_similar(artist_name: str, limit: int, api_key: str):
-    """Returns list of (name, mbid, score) tuples."""
+    """Last.fm artist.getSimilar → [(name, mbid, score)]."""
     try:
         r = http_requests.get("https://ws.audioscrobbler.com/2.0/", params={
             "method": "artist.getSimilar",
@@ -383,7 +383,7 @@ _MB_HEADERS = {"User-Agent": "Gemify/1.0 (gemify-app)"}
 
 
 def _mb_lookup(mbid: str) -> tuple:
-    """Direct MBID lookup on MusicBrainz. Returns (name, area_name)."""
+    """MBID → (name, area) via MusicBrainz."""
     r = http_requests.get(
         f"https://musicbrainz.org/ws/2/artist/{mbid}",
         params={"fmt": "json"},
@@ -399,7 +399,7 @@ def _mb_lookup(mbid: str) -> tuple:
 
 
 def _mb_search(name: str) -> tuple:
-    """Search MusicBrainz by name. Returns (canonical_name, area_name) if score >= 95."""
+    """MusicBrainz name search → (canonical_name, area) if confidence ≥ 95."""
     r = http_requests.get(
         "https://musicbrainz.org/ws/2/artist",
         params={"query": name, "fmt": "json", "limit": 1},
@@ -416,11 +416,7 @@ def _mb_search(name: str) -> tuple:
 
 
 def _resolve_names(entries: list) -> dict:
-    """Resolve Last.fm artist names to canonical names + areas via MusicBrainz.
-    entries: list of {"name": str, "mbid": str}
-    Returns: {original_name: {"name": canonical_name, "area": area_name_or_None}}
-    Cache stores same dict shape keyed by original name.
-    """
+    """Last.fm names → canonical names+areas via MusicBrainz. {orig_name: {name, area}}. In-memory cached."""
     result = {}
     for entry in entries:
         name = entry["name"]
@@ -589,7 +585,6 @@ def get_recommendations(req: RecommendationsRequest):
                 for row in cur.fetchall():
                     listeners_map[row["name"].lower()] = row["listeners"]
                 cur.close()
-                # key by canonical name for lookup
                 for d in newly_resolved:
                     if d["canonical_name"].lower() in listeners_map:
                         listeners_map[d["canonical_name"].lower()] = listeners_map[d["canonical_name"].lower()]
