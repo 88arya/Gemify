@@ -1124,13 +1124,12 @@
   function buildHistoryRow(rec) {
     const row = document.createElement("div");
     row.className = "history-row";
-    const src = rec.image_url;
+    const src = rec.image_url || rec.image;
     const img = src
       ? `<img class="artist-row-avatar" src="${src}" alt="${rec.name}" onerror="this.outerHTML='<div class=\\'artist-row-avatar-initials\\'>${initials(rec.name)}</div>'" />`
       : `<div class="artist-row-avatar-initials">${initials(rec.name)}</div>`;
-    const listeners = rec.monthly_listeners
-      ? `<span class="history-row-listeners">${formatListeners(rec.monthly_listeners)} monthly listeners</span>`
-      : '';
+    const listenerCount = rec.monthly_listeners || rec.listeners;
+    const listeners = `<span class="history-row-listeners">${formatListeners(listenerCount)} monthly listeners</span>`;
     row.innerHTML = `${img}<div class="history-row-info"><span class="history-row-name">${rec.name}</span>${listeners}</div>`;
     return row;
   }
@@ -1163,7 +1162,15 @@
       const filtered = (data.recommendations || []).filter(r => !userArtistNames.has(r.name.toLowerCase())).slice(0, 5);
       recsList.querySelector(".rec-loading")?.remove();
       renderRecommendations(filtered, false);
-      loadRecommendationHistory();
+      const histList = document.getElementById("album-list");
+      const newNames = new Set(filtered.map(r => r.name.toLowerCase()));
+      histList.querySelectorAll(".history-row").forEach(row => {
+        const name = row.querySelector(".history-row-name")?.textContent?.toLowerCase();
+        if (name && newNames.has(name)) row.remove();
+      });
+      for (let i = filtered.length - 1; i >= 0; i--) {
+        histList.prepend(buildHistoryRow(filtered[i]));
+      }
     } catch {
       clearInterval(msgInterval);
       recsList.innerHTML = `<p style="color:#e74c3c;padding:16px">Failed to load recommendations.</p>`;
@@ -1338,7 +1345,7 @@
     if (selected.size >= 10) return;
     selected.set(artist.id, artist);
     row.classList.add("selected");
-    row.querySelector(".artist-row-add").textContent = "✔";
+    row.querySelector(".artist-row-add").textContent = "";
     addToSelectedList(artist);
     updateSelectionCount();
   }
@@ -1366,7 +1373,7 @@
     const row = document.createElement("div");
     row.className = "artist-row selected";
     row.dataset.id = artist.id;
-    row.innerHTML = `<span class="selected-num">${num}</span>${avatar}<div class="artist-row-name">${artist.name}</div><span class="selected-row-action"><button class="artist-row-add" title="Remove">✔</button></span>`;
+    row.innerHTML = `<span class="selected-num">${num}</span>${avatar}<div class="artist-row-name">${artist.name}</div><span class="selected-row-action"><button class="artist-row-add" title="Remove"></button></span>`;
     row.querySelector(".artist-row-add").addEventListener("click", e => {
       e.stopPropagation();
       deselectArtist(artist.id);
