@@ -24,8 +24,10 @@ def get_cursor():
 import json
 import math
 import os
+import pickle
 import re
 import time
+import numpy as np
 import networkx as nx
 import requests as http_requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,6 +37,80 @@ _refresh_in_progress = set()  # spotify_ids currently being refreshed
 ARTISTS_CACHE_TTL = 21600  # 6 hours
 
 _mbid_name_cache = {}  # mbid -> canonical name (MusicBrainz)
+
+# ── XGBoost helpers ──────────────────────────────────────────────────────────
+
+def _get_user_history_features(spotify_id: str) -> dict:
+    """Query feedback + recommendations to compute per-user history features."""
+    try:
+        cur = get_cursor()
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM feedback WHERE spotify_user_id = %s",
+            (spotify_id,)
+        )
+        feedback_count = cur.fetchone()["cnt"]
+
+        if feedback_count == 0:
+            cur.close()
+            return {"feedback_count": 0, "avg_liked_listeners": 0.0, "liked_b1_rate": 0.5}
+
+        cur.execute("""
+            SELECT r.monthly_listeners, r.batch_number
+            FROM feedback f
+            JOIN recommendations r
+              ON r.spotify_user_id = f.spotify_user_id
+             AND lower(r.name) = lower(f.artist_name)
+            WHERE f.spotify_user_id = %s AND f.label = 1
+        """, (spotify_id,))
+        liked = cur.fetchall()
+        cur.close()
+
+        if not liked:
+            return {"feedback_count": feedback_count, "avg_liked_listeners": 0.0, "liked_b1_rate": 0.5}
+
+        listeners_vals = [row["monthly_listeners"] or 0 for row in liked]
+        batch_vals = [row["batch_number"] or 1 for row in liked]
+
+        avg_liked_listeners = float(np.mean(listeners_vals))
+        liked_b1_rate = float(sum(1 for b in batch_vals if b == 1) / len(batch_vals))
+
+        return {
+            "feedback_count": feedback_count,
+            "avg_liked_listeners": avg_liked_listeners,
+            "liked_b1_rate": liked_b1_rate,
+        }
+    except Exception as e:
+        logger.warning(f"[xgb] history features failed: {e}")
+        return {"feedback_count": 0, "avg_liked_listeners": 0.0, "liked_b1_rate": 0.5}
+
+
+def _build_feature_matrix(candidates: list, session: dict, history: dict) -> np.ndarray:
+    """
+    Build (N, 13) feature matrix for XGBoost inference or training.
+
+    candidates: list of recommendation dicts (with ML fields present)
+    session:    { avg_seed_listeners, seed_count }
+    history:    { feedback_count, avg_liked_listeners, liked_b1_rate }
+    """
+    rows = []
+    for r in candidates:
+        rows.append([
+            r.get("sum_weight") or 0.0,                    # 1
+            r.get("batch_number") or 1,                    # 2
+            r.get("listeners") or 0.0,                     # 3
+            r.get("popularity_factor") or 0.85,            # 4
+            r.get("final_score") or 0.0,                   # 5
+            r.get("n_seeds") or 1,                         # 6
+            1 if (r.get("listeners") or 0) > 0 else 0,    # 7 has_listeners_data
+            1 if r.get("image") else 0,                    # 8 has_image
+            session.get("avg_seed_listeners") or 0.0,      # 9
+            session.get("seed_count") or 1,                # 10
+            history.get("avg_liked_listeners") or 0.0,     # 11
+            history.get("liked_b1_rate") or 0.5,           # 12
+            history.get("feedback_count") or 0,            # 13
+        ])
+    return np.array(rows, dtype=float)
+
 
 app = FastAPI()
 
