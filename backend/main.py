@@ -24,6 +24,7 @@ def get_cursor():
 import json
 import math
 import os
+import re
 import time
 import networkx as nx
 import requests as http_requests
@@ -39,6 +40,28 @@ app = FastAPI()
 
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+
+# Ensure recommendations table exists
+try:
+    _init_cur = conn.cursor()
+    _init_cur.execute("""
+        CREATE TABLE IF NOT EXISTS recommendations (
+            id SERIAL PRIMARY KEY,
+            spotify_user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            image_url TEXT,
+            monthly_listeners BIGINT,
+            rank INT,
+            added_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(spotify_user_id, name)
+        )
+    """)
+    conn.commit()
+    _init_cur.close()
+except Exception as e:
+    print(f"[startup] DB init: {e}", flush=True)
+    conn.rollback()
+
 
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
@@ -358,7 +381,9 @@ def get_albums(spotify_id: str):
 
 
 class RecommendationsRequest(BaseModel):
+    spotify_id: str
     artists: list
+    exclude: list = []
 
 
 def _lastfm_similar(artist_name: str, limit: int, api_key: str):
@@ -447,6 +472,7 @@ def _resolve_names(entries: list) -> dict:
 
 @app.post("/recommendations")
 def get_recommendations(req: RecommendationsRequest):
+    print(f"[recs] ENDPOINT HIT spotify_id={req.spotify_id}", flush=True)
     _mbid_name_cache.clear()
     logger.info(f"[recs] starting — seeds={req.artists}")
     lastfm_key = os.getenv("LASTFM_API_KEY")
@@ -593,6 +619,31 @@ def get_recommendations(req: RecommendationsRequest):
             except Exception as e:
                 logger.info(f"[recs] listener pass 2 failed: {e}")
 
+    # ── Pass 3: LIKE fuzzy lookup for non-standard char artists still unmatched ──
+    still_unmatched_ns = [
+        d for d in unmatched_top5
+        if _has_nonstandard(d["name"])
+        and d.get("canonical_name", d["name"]).lower() not in listeners_map
+        and d["name"].lower() not in listeners_map
+    ]
+    if still_unmatched_ns:
+        try:
+            cur = get_cursor()
+            for d in still_unmatched_ns:
+                pattern = re.sub(r'[^a-z0-9 \'\-.]', '%', d["name"].lower())
+                cur.execute(
+                    "SELECT name, listeners FROM artist_listeners WHERE lower(name) LIKE %s LIMIT 1",
+                    (pattern,)
+                )
+                row = cur.fetchone()
+                if row:
+                    listeners_map[row["name"].lower()] = row["listeners"]
+                    d["canonical_name"] = row["name"]
+                    logger.info(f"[recs] pass 3 LIKE matched {d['name']!r} -> {row['name']!r}")
+            cur.close()
+        except Exception as e:
+            logger.info(f"[recs] listener pass 3 failed: {e}")
+
     # ── Popularity factor ──
     def popularity_factor(listeners):
         peak, sl, sr = 2_000_000, 4_680_000, 1_930_000
@@ -686,10 +737,62 @@ def get_recommendations(req: RecommendationsRequest):
 
     logger.info(f"[recs] done — top 5: {[r['name'] for r in results]}")
 
+    # ── Save to recommendations table ──
+    exclude_lower = {n.lower() for n in req.exclude}
+    display_results = [r for r in results if r["name"].lower() not in exclude_lower]
+    try:
+        cur = get_cursor()
+        # Probe whether rank column exists
+        _has_rank = True
+        try:
+            cur.execute("SELECT rank FROM recommendations LIMIT 0")
+        except Exception:
+            conn.rollback()
+            _has_rank = False
+            cur = get_cursor()
+
+        for rank, r in enumerate(display_results[:5], start=1):
+            if _has_rank:
+                cur.execute("""
+                    INSERT INTO recommendations (spotify_user_id, name, image_url, monthly_listeners, rank)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (spotify_user_id, name) DO UPDATE
+                        SET image_url = EXCLUDED.image_url,
+                            monthly_listeners = EXCLUDED.monthly_listeners,
+                            rank = EXCLUDED.rank,
+                            added_at = NOW()
+                """, (req.spotify_id, r["name"], r.get("image"), r.get("listeners"), rank))
+            else:
+                cur.execute("""
+                    INSERT INTO recommendations (spotify_user_id, name, image_url, monthly_listeners)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (spotify_user_id, name) DO UPDATE
+                        SET image_url = EXCLUDED.image_url,
+                            monthly_listeners = EXCLUDED.monthly_listeners,
+                            added_at = NOW()
+                """, (req.spotify_id, r["name"], r.get("image"), r.get("listeners")))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        print(f"[recs] DB save failed: {e}", flush=True)
+        conn.rollback()
+
     return JSONResponse(
         content={"recommendations": results},
         headers={"Cache-Control": "no-store"}
     )
+
+
+@app.get("/history")
+def get_recommendation_history(spotify_id: str):
+    cur = get_cursor()
+    cur.execute(
+        "SELECT name, image_url, monthly_listeners FROM recommendations WHERE spotify_user_id = %s ORDER BY added_at DESC LIMIT 100",
+        (spotify_id,)
+    )
+    recs = [dict(row) for row in cur.fetchall()]
+    cur.close()
+    return {"recommendations": recs}
 
 
 class AlbumCreate(BaseModel):
@@ -748,3 +851,6 @@ def debug_artists(spotify_id: str):
         "refresh_in_progress": spotify_id in _refresh_in_progress,
         "no_image_artists": no_image[:20],
     }
+
+@app.get('/ping')
+def ping(): return {'pong': True}
