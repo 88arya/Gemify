@@ -861,7 +861,7 @@ class FeedbackRequest(BaseModel):
 
 
 @app.post("/feedback")
-def post_feedback(req: FeedbackRequest):
+def post_feedback(req: FeedbackRequest, background_tasks: BackgroundTasks):
     cur = get_cursor()
     cur.execute("""
         INSERT INTO feedback (spotify_user_id, artist_name, label)
@@ -872,6 +872,7 @@ def post_feedback(req: FeedbackRequest):
     """, (req.spotify_id, req.artist_name, req.label))
     conn.commit()
     cur.close()
+    background_tasks.add_task(_retrain_model, req.spotify_id)
     return {"ok": True}
 
 
@@ -885,6 +886,102 @@ def delete_feedback(req: FeedbackRequest):
     conn.commit()
     cur.close()
     return {"ok": True}
+
+
+def _retrain_model(spotify_id: str):
+    """
+    Background task: retrain XGBoost model for this user from all labeled data.
+    Skips if fewer than 20 feedback rows exist.
+    Serialises model to users.xgb_model in DB.
+    """
+    try:
+        from xgboost import XGBClassifier
+    except ImportError:
+        logger.warning("[xgb] xgboost not installed, skipping retrain")
+        return
+
+    try:
+        cur = get_cursor()
+
+        # Pull all labeled rows joined with their recommendation features
+        cur.execute("""
+            SELECT
+                r.sum_weight, r.batch_number, r.monthly_listeners,
+                r.popularity_factor,
+                COALESCE(r.sum_weight, 0) * COALESCE(r.popularity_factor, 0.85) AS final_score,
+                r.n_seeds,
+                CASE WHEN COALESCE(r.monthly_listeners, 0) > 0 THEN 1 ELSE 0 END AS has_listeners_data,
+                CASE WHEN r.image_url IS NOT NULL THEN 1 ELSE 0 END AS has_image,
+                0.0 AS avg_seed_listeners,
+                1 AS seed_count,
+                f.label
+            FROM feedback f
+            JOIN recommendations r
+              ON r.spotify_user_id = f.spotify_user_id
+             AND lower(r.name) = lower(f.artist_name)
+            WHERE f.spotify_user_id = %s
+        """, (spotify_id,))
+        rows = cur.fetchall()
+
+        if len(rows) < 20:
+            logger.info(f"[xgb] only {len(rows)} labeled rows, skipping retrain")
+            cur.close()
+            return
+
+        # Build history features from current liked rows
+        history = _get_user_history_features(spotify_id)
+
+        X_list, y_list = [], []
+        for row in rows:
+            X_list.append([
+                row["sum_weight"] or 0.0,
+                row["batch_number"] or 1,
+                row["monthly_listeners"] or 0.0,
+                row["popularity_factor"] or 0.85,
+                row["final_score"] or 0.0,
+                row["n_seeds"] or 1,
+                row["has_listeners_data"],
+                row["has_image"],
+                history["avg_liked_listeners"],
+                1,  # seed_count not stored per session, use placeholder
+                history["avg_liked_listeners"],
+                history["liked_b1_rate"],
+                history["feedback_count"],
+            ])
+            y_list.append(row["label"])
+
+        X = np.array(X_list, dtype=float)
+        y = np.array(y_list, dtype=int)
+
+        n_pos = int(y.sum())
+        n_neg = len(y) - n_pos
+        scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1.0
+
+        model = XGBClassifier(
+            n_estimators=100,
+            max_depth=3,
+            learning_rate=0.1,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            min_child_weight=1,
+            scale_pos_weight=scale_pos_weight,
+            eval_metric="logloss",
+            verbosity=0,
+        )
+        model.fit(X, y)
+
+        model_bytes = pickle.dumps(model)
+        cur.execute(
+            "UPDATE users SET xgb_model = %s, xgb_trained_at = NOW() WHERE spotify_id = %s",
+            (model_bytes, spotify_id)
+        )
+        conn.commit()
+        cur.close()
+        logger.info(f"[xgb] retrained on {len(rows)} rows for {spotify_id}")
+
+    except Exception as e:
+        logger.error(f"[xgb] retrain failed: {e}")
+        conn.rollback()
 
 
 @app.get("/history")
