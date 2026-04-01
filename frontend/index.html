@@ -1173,13 +1173,23 @@
     row.innerHTML = `${img}<div class="history-row-info"><a class="history-row-name" href="https://open.spotify.com/search/${encodeURIComponent(rec.name)}" target="_blank">${rec.name}</a>${listeners}</div><div class="history-row-actions"><button class="history-row-btn heart"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><button class="history-row-btn dislike">✕</button></div>`;
     row.querySelector(".heart").addEventListener("click", e => {
       e.stopPropagation();
-      e.currentTarget.classList.toggle("liked");
+      const isLiked = e.currentTarget.classList.toggle("liked");
       row.querySelector(".dislike").classList.remove("disliked");
+      fetch("/feedback", {
+        method: isLiked ? "POST" : "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spotify_id: spotifyId, artist_name: rec.name, label: 1 })
+      }).catch(() => {});
     });
     row.querySelector(".dislike").addEventListener("click", e => {
       e.stopPropagation();
-      e.currentTarget.classList.toggle("disliked");
+      const isDisliked = e.currentTarget.classList.toggle("disliked");
       row.querySelector(".heart").classList.remove("liked");
+      fetch("/feedback", {
+        method: isDisliked ? "POST" : "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spotify_id: spotifyId, artist_name: rec.name, label: 0 })
+      }).catch(() => {});
     });
     return row;
   }

@@ -1,0 +1,291 @@
+GEMIFY RECOMMENDATION PIPELINE
+================================
+Full workflow from user artists → final recommendations.
+Includes all numbers, thresholds, formulas.
+Written as a reference for XGBoost fine-tuning integration.
+
+────────────────────────────────────────────────────────────────
+STAGE 1: USER'S TOP ARTISTS
+────────────────────────────────────────────────────────────────
+
+Source: Spotify API (multiple endpoints aggregated)
+Triggered: On login and refreshed every 6 hours (TTL = 21,600s)
+
+Scoring per artist:
+  - Followed artists:                  +8.0 (flat bonus)
+  - Top Artists short_term (4 weeks):  (50 - rank + 1) × 3.0
+  - Top Artists medium_term (6 months):(50 - rank + 1) × 1.5
+  - Top Artists long_term (all time):  (50 - rank + 1) × 0.5
+  - Top Tracks Artists short_term:     (50 - rank + 1) × 0.3
+  - Top Tracks Artists medium_term:    (50 - rank + 1) × 0.1
+
+  Example: rank 1 short_term → (50 - 1 + 1) × 3.0 = 150.0 points
+
+Fields stored per artist:
+  id, name, image (medium), image_thumb (small), sources[], score
+
+Storage:
+  - In-memory: _artists_cache[spotify_id] = { ts, data[] }
+  - DB (users table): artists_data (JSON), artists_cached_at
+  - DB (artists table): image URLs cached for up to 7 days
+
+────────────────────────────────────────────────────────────────
+STAGE 2: USER SELECTS SEED ARTISTS (frontend)
+────────────────────────────────────────────────────────────────
+
+User picks 1–10 artists from their top artists list.
+These become the "seeds" passed to /recommendations.
+
+Request payload:
+  { spotify_id, artists: [name, ...], exclude: [name, ...] }
+
+The exclude list = all of the user's known artists (to prevent
+recommending artists they already listen to).
+
+────────────────────────────────────────────────────────────────
+STAGE 3: GRAPH CONSTRUCTION (3 batches)
+────────────────────────────────────────────────────────────────
+
+Graph type: Directed (nx.DiGraph)
+Node attributes: batch_number, sum_weight, seeds[]
+Edge attributes: weight (Last.fm match score, 0.0–1.0)
+
+── BATCH 0: Seeds ──────────────────────────────────────────────
+
+  Nodes: exactly n_seed (number of selected artists)
+  sum_weight: 1.0 (always, for every seed)
+  seeds: [artist_name] (each seed points to itself)
+
+── BATCH 1: Direct Similar Artists ─────────────────────────────
+
+  API: Last.fm artist.getSimilar
+  Fetch limit per seed:
+    n_seed = 1  → limit = 50
+    n_seed = 2  → limit = 50   (100 // 2)
+    n_seed = 5  → limit = 20   (100 // 5)
+    n_seed = 10 → limit = 10   (100 // 10)
+    General:    limit = max(1, 100 // n_seed)
+
+  Parallelization: ThreadPoolExecutor, max_workers = min(n_seed, 10)
+
+  Weight accumulation for each returned artist:
+    sum_weight += parent_seed.sum_weight × last_fm_match_score
+    (parent.sum_weight is always 1.0 in B1)
+    → sum_weight = sum of match scores from all seeds that listed it
+
+  Pruning:
+    - Sort all B1 candidates by sum_weight descending
+    - Keep all with sum_weight ≥ 0.1   (threshold)
+    - If fewer than 10 meet threshold, keep top 10 regardless
+    - Surviving B1 nodes: typically 10–50+
+
+── BATCH 2: Neighbors of Surviving B1 ──────────────────────────
+
+  API: Last.fm artist.getSimilar (again)
+  Fetch limit per B1 node: 5
+  Parallelization: ThreadPoolExecutor, max_workers = min(|surviving_b1|, 20)
+
+  Skip if returned artist is:
+    - In seed set (batch 0)
+    - Already in any B1 node (b1_all_lower)
+
+  Weight accumulation:
+    sum_weight += parent_b1.sum_weight × last_fm_match_score
+    seeds[] += parent_b1.seeds[]  (inherited from parent's seed chain)
+
+  Pruning:
+    - Sort all B2 candidates by sum_weight descending
+    - Keep all with sum_weight ≥ 0.2   (stricter threshold than B1)
+    - If fewer than 10 meet threshold, keep top 10 regardless
+    - Surviving B2 nodes: typically 10–50+
+
+── Graph Summary ────────────────────────────────────────────────
+
+  Total nodes: ~20–60 (B0 + surviving B1 + surviving B2)
+  Total edges: ~60–300+ depending on seed count
+
+────────────────────────────────────────────────────────────────
+STAGE 4: LISTENER COUNT LOOKUP
+────────────────────────────────────────────────────────────────
+
+Candidates = all surviving B1 + B2 nodes (B0 seeds excluded from results)
+
+Pass 1 — Direct DB lookup:
+  SELECT name, listeners FROM artist_listeners
+  WHERE lower(name) = ANY(candidate_names_lower)
+
+Pass 2 — MusicBrainz name resolution (for unmatched):
+  Target: top 5 unmatched by sum_weight + any with non-ASCII characters
+  If MBID known:   GET /ws/2/artist/{mbid}
+  If MBID unknown: GET /ws/2/artist?query={name}, require confidence ≥ 95
+  Returns canonical name and area (country), then re-queries artist_listeners
+
+Pass 3 — LIKE fuzzy lookup (for remaining unmatched with special chars):
+  Replace non-standard characters with SQL wildcard %
+  SELECT name, listeners FROM artist_listeners
+  WHERE lower(name) LIKE pattern LIMIT 1
+
+────────────────────────────────────────────────────────────────
+STAGE 5: POPULARITY FACTOR (Gaussian curve)
+────────────────────────────────────────────────────────────────
+
+  peak    = 2,000,000 listeners   (factor = 1.0 at this point)
+  σ_left  = 4,680,000             (for listeners ≤ peak)
+  σ_right = 1,930,000             (for listeners > peak)
+
+  if listeners ≤ 500,000:
+    factor = 0.85  (flat floor)
+  else:
+    σ = σ_left  if listeners ≤ peak else σ_right
+    factor = exp( -((listeners - peak)^2) / (2 × σ^2) )
+
+  Example values:
+    listeners =   500,000 → factor = 0.85   (floor)
+    listeners = 1,000,000 → factor ≈ 0.993
+    listeners = 2,000,000 → factor = 1.0    (peak)
+    listeners = 3,000,000 → factor ≈ 0.866
+    listeners = 5,000,000 → factor ≈ 0.217
+    listeners =      None → factor = 0.85   (treated as 0, hits floor)
+
+  Interpretation: The model prefers artists around 2M monthly listeners.
+  Too obscure (< 500K) or too mainstream (> 5M) are down-weighted.
+
+────────────────────────────────────────────────────────────────
+STAGE 6: FINAL SCORE
+────────────────────────────────────────────────────────────────
+
+  final_score = round(sum_weight × popularity_factor(listeners), 4)
+
+  Filters applied before scoring:
+    - Skip any artist with "&" or "," in name (collab/group entries)
+
+  Sort all candidates by final_score descending.
+  Keep top 10.
+
+  Example calculations:
+    B1 artist: sum_weight=0.75, listeners=2M
+      → 0.75 × 1.0 = 0.75
+
+    B2 artist: sum_weight=0.12, listeners=1M
+      → 0.12 × 0.993 = 0.1192
+
+    B2 artist: sum_weight=0.15, listeners=None
+      → 0.15 × 0.85 = 0.1275
+
+────────────────────────────────────────────────────────────────
+STAGE 7: IMAGE LOOKUP FOR TOP 10
+────────────────────────────────────────────────────────────────
+
+  Pass 1 — DB cache:
+    SELECT name, image_url FROM artists
+    WHERE name = ANY(result_names) AND image_url IS NOT NULL
+
+  Pass 2 — Spotify Search API (for missing images):
+    Query: artist:{name}, type=artist, limit=5
+    Match by name (case-insensitive)
+    Use image at index [1], fallback to [0], fallback to None
+    Cache results to artists table
+
+────────────────────────────────────────────────────────────────
+STAGE 8: FILTERING AND RETURN
+────────────────────────────────────────────────────────────────
+
+  Apply exclude list (user's own artists + any passed in request):
+    display_results = [r for r in results if name not in exclude_lower]
+    Take first 5 from filtered list → these are the final recommendations
+
+  Internal fields stripped before sending to frontend:
+    batch, sum_weight, final_score removed
+
+  Fields returned to frontend:
+    name, from[], listeners, area, image
+
+  Top 5 saved to recommendations DB table:
+    spotify_user_id, name, image_url, monthly_listeners, rank (1–5)
+    ON CONFLICT: update image, listeners, rank, added_at = NOW()
+
+────────────────────────────────────────────────────────────────
+QUICK REFERENCE: ALL NUMBERS
+────────────────────────────────────────────────────────────────
+
+  Artist scoring weights (sources):
+    followed artists         +8.0
+    short_term top artists   ×3.0
+    medium_term top artists  ×1.5
+    long_term top artists    ×0.5
+    short_term top tracks    ×0.3
+    medium_term top tracks   ×0.1
+
+  Cache TTL:                 6 hours (21,600s)
+  Image cache validity:      7 days
+
+  Batch 1 fetch limit:       max(1, 100 // n_seed) — min 50 for single seed
+  Batch 1 prune threshold:   sum_weight ≥ 0.1
+  Batch 1 min survivors:     10
+
+  Batch 2 fetch limit:       5 per B1 node
+  Batch 2 prune threshold:   sum_weight ≥ 0.2
+  Batch 2 min survivors:     10
+  Batch 2 max workers:       min(|surviving_b1|, 20)
+
+  Popularity peak:           2,000,000 listeners → factor 1.0
+  Popularity σ_left:         4,680,000
+  Popularity σ_right:        1,930,000
+  Popularity floor:          listeners ≤ 500,000 → factor 0.85
+
+  MusicBrainz min confidence: 95
+  Spotify image search limit: 5 results
+
+  Final candidates kept:     top 10 by final_score
+  Final results shown:       top 5 (after exclude filter)
+  Results saved to DB:       top 5 with rank 1–5
+
+────────────────────────────────────────────────────────────────
+XGBOOST INTEGRATION PLAN
+────────────────────────────────────────────────────────────────
+
+PURPOSE:
+  The current model ranks candidates purely by:
+    final_score = sum_weight × popularity_factor(listeners)
+
+  XGBoost will re-rank the top 10 candidates using a richer feature
+  set, with the like/dislike buttons providing training labels.
+
+FEEDBACK SIGNAL:
+  Like button   → positive label (1)
+  Dislike button → negative label (0)
+  No interaction → unlabeled (ignored or treated as weak negative)
+
+  Feedback is currently visual only (not persisted).
+  To use it for training, likes/dislikes must be saved to DB
+  with (spotify_user_id, artist_name, label, timestamp).
+
+PROPOSED FEATURES FOR XGBOOST:
+  From the current pipeline:
+    1. sum_weight          — graph signal strength
+    2. batch_number        — how far from seed (0, 1, 2)
+    3. listeners           — raw monthly listener count
+    4. popularity_factor   — current gaussian score
+    5. final_score         — current combined score
+    6. n_seeds_in_from     — how many seed artists contributed
+    7. area                — artist country (encoded)
+    8. has_image           — boolean (data completeness signal)
+
+  From user profile (seed context):
+    9.  avg_listeners_of_seeds     — listener range the user likes
+    10. seed_batch_diversity       — how varied the seeds are
+
+  From feedback history (once persisted):
+    11. user_liked_same_area       — did user like artists from this area before
+    12. user_liked_similar_weight  — did user like artists with similar sum_weight
+
+TARGET:
+  Binary classification: will the user like this recommendation?
+  Train per-user over time as feedback accumulates.
+  Re-rank top 10 candidates using XGBoost predicted probability.
+  Replace or multiply with current final_score.
+
+DATA REQUIREMENT:
+  XGBoost needs labeled examples per user.
+  Minimum viable: ~20–50 liked/disliked artists per user.
+  Until enough data exists, fall back to current final_score ranking.

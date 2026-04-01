@@ -1,0 +1,325 @@
+GEMIFY ML IMPLEMENTATION SPEC
+==============================
+XGBoost score adjustment layer on top of the existing graph-based pipeline.
+Single user, single Spotify account, Supabase storage.
+Feedback: like / dislike buttons in the Your Recommendations panel.
+
+Goal: learn the user's personal taste profile from feedback and adjust
+      final_score per candidate accordingly.
+
+adjusted_score = final_score × xgb_multiplier
+  where xgb_multiplier = P(user likes this artist | features)
+  output by XGBClassifier trained on accumulated feedback.
+
+────────────────────────────────────────────────────────────────
+PHASE 1: FEEDBACK PERSISTENCE
+────────────────────────────────────────────────────────────────
+
+Prerequisite for everything. No ML without labels.
+
+── Step 1.1: New DB table ───────────────────────────────────────
+
+  Table: feedback
+    id              SERIAL PRIMARY KEY
+    spotify_user_id TEXT NOT NULL
+    artist_name     TEXT NOT NULL
+    label           SMALLINT NOT NULL   -- 1 = like, 0 = dislike
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+    UNIQUE (spotify_user_id, artist_name)
+    ON CONFLICT: update label + created_at (user can change mind)
+
+── Step 1.2: Backend endpoint ───────────────────────────────────
+
+  POST /feedback
+  Body: { spotify_id, artist_name, label }
+  Action: upsert row into feedback table
+  Triggers background retraining if feedback_count >= 20
+  Response: { ok: true }
+
+── Step 1.3: Frontend wiring ────────────────────────────────────
+
+  Like clicked   → POST /feedback { label: 1 }
+  Dislike clicked → POST /feedback { label: 0 }
+  Fire-and-forget — do not block UI
+  Toggling (like → dislike) sends new label, server upserts
+
+── Step 1.4: Preserve ML features in recommendations table ──────
+
+  Currently batch, sum_weight, final_score are stripped before saving.
+  These must be stored as they are features for training.
+
+  Add columns to recommendations table:
+    sum_weight        FLOAT
+    batch_number      SMALLINT
+    popularity_factor FLOAT
+    n_seeds           SMALLINT   -- how many seeds contributed to this candidate
+
+  Populate at save time (end of /recommendations endpoint).
+
+────────────────────────────────────────────────────────────────
+PHASE 2: FEATURE ENGINEERING
+────────────────────────────────────────────────────────────────
+
+13 features assembled per candidate at inference and training time.
+All sourced from existing pipeline data — no new API calls needed.
+
+── Per-candidate features (from pipeline) ──────────────────────
+
+  Feature 1:  sum_weight
+              Graph propagation score.
+              Higher = more connected to seeds via Last.fm similarity.
+              Type: float
+
+  Feature 2:  batch_number
+              1 = direct neighbor of seed, 2 = second-degree neighbor.
+              Captures discovery depth. B1 is safer, B2 is more adventurous.
+              Type: int (1 or 2)
+
+  Feature 3:  listeners
+              Raw monthly listener count from artist_listeners table.
+              NULL → imputed as 0.
+              Type: float
+
+  Feature 4:  popularity_factor
+              Gaussian score from pipeline Stage 5 (0.85–1.0).
+              Encodes where artist sits on the mainstream/obscure axis.
+              Type: float
+
+  Feature 5:  final_score
+              Current pipeline score = sum_weight × popularity_factor.
+              Acts as a strong baseline feature.
+              Type: float
+
+  Feature 6:  n_seeds_contributing
+              Number of seed artists whose chain led to this candidate.
+              Higher = more broadly consistent with user's current selection.
+              Type: int (1–10)
+
+  Feature 7:  has_listeners_data
+              1 if listeners > 0, 0 if missing.
+              Type: int (0 or 1)
+
+  Feature 8:  has_image
+              1 if image URL exists, 0 otherwise.
+              Type: int (0 or 1)
+
+── Per-session context features (from seed set) ────────────────
+
+  Feature 9:  avg_seed_listeners
+              Average monthly listeners of the seeds selected this session.
+              Captures what listener tier the user is exploring right now.
+              Type: float
+
+  Feature 10: seed_count
+              Number of seeds selected this session (1–10).
+              Type: int
+
+── User history features (computed from feedback table) ─────────
+
+  These are computed fresh at inference time from the feedback table.
+  Only meaningful once feedback_count >= 20.
+
+  Feature 11: user_avg_liked_listeners
+              Average listeners of all artists the user has liked so far.
+              This is how XGBoost learns your preferred listener tier.
+              Example: if you consistently like ~1M artists, this = ~1,000,000
+              and XGBoost will learn to boost candidates near that value.
+              Type: float
+
+  Feature 12: user_liked_b1_rate
+              Fraction of past likes that were batch_number = 1 vs 2.
+              Captures whether user prefers direct or deeper discoveries.
+              Type: float (0.0–1.0)
+
+  Feature 13: user_feedback_count
+              Total labeled artists for this user.
+              Used to gate cold start. Also a model maturity signal.
+              Type: int
+
+────────────────────────────────────────────────────────────────
+PHASE 3: TRAINING DATA ASSEMBLY
+────────────────────────────────────────────────────────────────
+
+Training rows come from joining:
+  recommendations table  →  features per past recommendation
+  feedback table         →  label for that artist
+
+Join: recommendations.name = feedback.artist_name
+      AND recommendations.spotify_user_id = feedback.spotify_user_id
+
+Each training row:
+  X = [ sum_weight, batch_number, listeners, popularity_factor,
+        final_score, n_seeds_contributing, has_listeners_data,
+        has_image, avg_seed_listeners, seed_count,
+        user_avg_liked_listeners, user_liked_b1_rate,
+        user_feedback_count ]
+  y = label (1 = like, 0 = dislike)
+
+Only rows with a label in feedback table are used.
+Use ALL available labeled rows — no time window limit (data is scarce early).
+
+── Cold start thresholds ────────────────────────────────────────
+
+  feedback_count < 20
+    → Skip XGBoost entirely. Return pipeline's adjusted_score = final_score.
+    → Show no visible change to user.
+
+  20 ≤ feedback_count < 50
+    → Train XGBoost but blend conservatively:
+      adjusted_score = final_score × (0.4 × xgb_prob + 0.6)
+      (multiplier ranges from 0.6 to 1.0, gentle nudge)
+
+  feedback_count ≥ 50
+    → Full adjustment:
+      adjusted_score = final_score × xgb_prob
+      (multiplier ranges from 0.0 to 1.0)
+
+────────────────────────────────────────────────────────────────
+PHASE 4: MODEL TRAINING
+────────────────────────────────────────────────────────────────
+
+── Model type ───────────────────────────────────────────────────
+
+  XGBClassifier
+  Task: binary classification — P(user likes this artist)
+  Output: probability in [0.0, 1.0] used as score multiplier
+
+── Hyperparameters (initial) ────────────────────────────────────
+
+  n_estimators:     100
+  max_depth:        3        (shallow — avoids overfitting on small dataset)
+  learning_rate:    0.1
+  subsample:        0.8
+  colsample_bytree: 0.8
+  min_child_weight: 1
+  scale_pos_weight: n_dislikes / n_likes  (handle class imbalance)
+  eval_metric:      logloss
+  use_label_encoder: False
+
+── Model storage ────────────────────────────────────────────────
+
+  Serialise trained model with pickle.
+  Store as BYTEA in users table:
+    Column: xgb_model       BYTEA
+    Column: xgb_trained_at  TIMESTAMPTZ
+
+  Load at inference time: deserialise from DB.
+  If column is NULL: cold start, use fallback.
+
+── When to retrain ──────────────────────────────────────────────
+
+  Trigger: every POST /feedback where feedback_count >= 20
+  Runs as FastAPI BackgroundTask (non-blocking)
+  Expected runtime: < 500ms (shallow model, small dataset)
+
+  Retraining steps:
+    1. Pull all (features, label) rows for this user via join query
+    2. If count < 20: exit
+    3. Build X matrix and y vector
+    4. Compute scale_pos_weight from class counts
+    5. Fit XGBClassifier
+    6. Serialise with pickle.dumps()
+    7. UPDATE users SET xgb_model = %s, xgb_trained_at = NOW()
+
+────────────────────────────────────────────────────────────────
+PHASE 5: INFERENCE (SCORE ADJUSTMENT AT REQUEST TIME)
+────────────────────────────────────────────────────────────────
+
+Slots into pipeline at Stage 6, after top 10 are scored by final_score
+and before the final 5 are selected.
+
+── Step 5.1: Check cold start ───────────────────────────────────
+
+  SELECT COUNT(*) FROM feedback WHERE spotify_user_id = ?
+  If count < 20: skip to Step 5.5 (return final_score unchanged)
+
+── Step 5.2: Load model ─────────────────────────────────────────
+
+  SELECT xgb_model FROM users WHERE spotify_id = ?
+  If NULL: skip to Step 5.5
+
+  Deserialise: model = pickle.loads(xgb_model_bytes)
+
+── Step 5.3: Compute user history features ──────────────────────
+
+  Query feedback + recommendations join:
+    user_avg_liked_listeners
+    user_liked_b1_rate
+    user_feedback_count
+
+── Step 5.4: Assemble feature matrix and predict ────────────────
+
+  For each of the top 10 candidates, build feature vector (13 features).
+  X shape: (10, 13)
+
+  probs = model.predict_proba(X)[:, 1]   -- P(like) per candidate
+
+  Apply blending based on feedback_count:
+
+    20–49:  adjusted_score = final_score × (0.4 × prob + 0.6)
+    50+:    adjusted_score = final_score × prob
+
+  Re-sort top 10 by adjusted_score descending.
+
+── Step 5.5: Fallback ───────────────────────────────────────────
+
+  adjusted_score = final_score  (no change)
+  Sort order unchanged.
+
+── Step 5.6: Continue pipeline ──────────────────────────────────
+
+  Take first 5 from re-sorted list (after exclude filter).
+  Image lookup and DB save continue as normal.
+  Save adjusted_score alongside final_score to recommendations table
+  so future training rows carry both.
+
+────────────────────────────────────────────────────────────────
+PHASE 6: MONITORING
+────────────────────────────────────────────────────────────────
+
+Simple queries to track model health over time.
+
+  feedback_count              — how trained is the model
+  like_rate = likes / total   — are recommendations improving
+  xgb_trained_at              — model freshness
+
+  Health signal:
+    If like_rate < 0.3 after 50+ feedback:
+      → XGBoost is not learning useful signal
+      → Revisit feature set or check data quality
+
+  Improvement signal:
+    Over time, user_avg_liked_listeners should stabilise.
+    If it keeps shifting, user's taste is evolving — model adapts naturally
+    since it retrains on all feedback each time.
+
+────────────────────────────────────────────────────────────────
+IMPLEMENTATION ORDER
+────────────────────────────────────────────────────────────────
+
+  1.  Create feedback table in Supabase
+  2.  Add columns to recommendations table (sum_weight, batch_number,
+      popularity_factor, n_seeds)
+  3.  Add xgb_model + xgb_trained_at columns to users table
+  4.  Implement POST /feedback endpoint
+  5.  Wire like/dislike buttons to POST /feedback in frontend
+  6.  Update /recommendations endpoint to populate new columns on save
+  7.  Implement feature assembly function
+  8.  Implement training function (_retrain_model)
+  9.  Implement inference function (_xgb_adjust_scores)
+  10. Wire inference into /recommendations after Stage 6
+  11. Wire retraining into POST /feedback as background task
+  12. Test cold start fallback (< 20 feedback)
+  13. Test blended mode (20–49 feedback)
+  14. Test full mode (50+ feedback)
+
+  Do not proceed to step N+1 until step N is verified working.
+  Cold start fallback guarantees app never breaks at any step.
+
+────────────────────────────────────────────────────────────────
+DEPENDENCIES TO ADD
+────────────────────────────────────────────────────────────────
+
+  xgboost    — model training and inference
+  numpy      — feature matrix assembly
+  pickle     — model serialisation (stdlib, no install needed)

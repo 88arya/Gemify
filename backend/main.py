@@ -661,11 +661,13 @@ def get_recommendations(req: RecommendationsRequest):
         display_name = d.get("canonical_name", d["name"])
         area = d.get("area")
         listeners = listeners_map.get(display_name.lower()) or listeners_map.get(d["name"].lower())
-        final_score = round(d["sum_weight"] * popularity_factor(listeners), 4)
+        pf = round(popularity_factor(listeners), 4)
+        final_score = round(d["sum_weight"] * pf, 4)
         results.append({
             "name": display_name,
             "batch": G.nodes[d["name"]]["batch_number"],
             "sum_weight": round(d["sum_weight"], 4),
+            "popularity_factor": pf,
             "final_score": final_score,
             "from": d["seeds"],
             "listeners": listeners,
@@ -729,58 +731,84 @@ def get_recommendations(req: RecommendationsRequest):
         except Exception as e:
             logger.info(f"[recs] Spotify image fetch failed: {e}")
 
-    # ── Strip internal fields ──
-    for r in results:
-        r.pop("batch", None)
-        r.pop("sum_weight", None)
-        r.pop("final_score", None)
-
     logger.info(f"[recs] done — top 5: {[r['name'] for r in results]}")
 
-    # ── Save to recommendations table ──
+    # ── Save to recommendations table (before stripping, so ML features are available) ──
     exclude_lower = {n.lower() for n in req.exclude}
     display_results = [r for r in results if r["name"].lower() not in exclude_lower]
     try:
         cur = get_cursor()
-        # Probe whether rank column exists
-        _has_rank = True
-        try:
-            cur.execute("SELECT rank FROM recommendations LIMIT 0")
-        except Exception:
-            conn.rollback()
-            _has_rank = False
-            cur = get_cursor()
-
         for rank, r in enumerate(display_results[:5], start=1):
-            if _has_rank:
-                cur.execute("""
-                    INSERT INTO recommendations (spotify_user_id, name, image_url, monthly_listeners, rank)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (spotify_user_id, name) DO UPDATE
-                        SET image_url = EXCLUDED.image_url,
-                            monthly_listeners = EXCLUDED.monthly_listeners,
-                            rank = EXCLUDED.rank,
-                            added_at = NOW()
-                """, (req.spotify_id, r["name"], r.get("image"), r.get("listeners"), rank))
-            else:
-                cur.execute("""
-                    INSERT INTO recommendations (spotify_user_id, name, image_url, monthly_listeners)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (spotify_user_id, name) DO UPDATE
-                        SET image_url = EXCLUDED.image_url,
-                            monthly_listeners = EXCLUDED.monthly_listeners,
-                            added_at = NOW()
-                """, (req.spotify_id, r["name"], r.get("image"), r.get("listeners")))
+            cur.execute("""
+                INSERT INTO recommendations (
+                    spotify_user_id, name, image_url, monthly_listeners, rank,
+                    sum_weight, batch_number, popularity_factor, n_seeds
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (spotify_user_id, name) DO UPDATE
+                    SET image_url         = EXCLUDED.image_url,
+                        monthly_listeners = EXCLUDED.monthly_listeners,
+                        rank              = EXCLUDED.rank,
+                        sum_weight        = EXCLUDED.sum_weight,
+                        batch_number      = EXCLUDED.batch_number,
+                        popularity_factor = EXCLUDED.popularity_factor,
+                        n_seeds           = EXCLUDED.n_seeds,
+                        added_at          = NOW()
+            """, (
+                req.spotify_id, r["name"], r.get("image"), r.get("listeners"), rank,
+                r.get("sum_weight"), r.get("batch"), r.get("popularity_factor"),
+                len(r.get("from", []))
+            ))
         conn.commit()
         cur.close()
     except Exception as e:
         print(f"[recs] DB save failed: {e}", flush=True)
         conn.rollback()
 
+    # ── Strip internal fields ──
+    for r in results:
+        r.pop("batch", None)
+        r.pop("sum_weight", None)
+        r.pop("final_score", None)
+        r.pop("popularity_factor", None)
+
     return JSONResponse(
         content={"recommendations": results},
         headers={"Cache-Control": "no-store"}
     )
+
+
+class FeedbackRequest(BaseModel):
+    spotify_id: str
+    artist_name: str
+    label: int  # 1 = like, 0 = dislike
+
+
+@app.post("/feedback")
+def post_feedback(req: FeedbackRequest):
+    cur = get_cursor()
+    cur.execute("""
+        INSERT INTO feedback (spotify_user_id, artist_name, label)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (spotify_user_id, artist_name) DO UPDATE
+            SET label = EXCLUDED.label,
+                created_at = NOW()
+    """, (req.spotify_id, req.artist_name, req.label))
+    conn.commit()
+    cur.close()
+    return {"ok": True}
+
+
+@app.delete("/feedback")
+def delete_feedback(req: FeedbackRequest):
+    cur = get_cursor()
+    cur.execute(
+        "DELETE FROM feedback WHERE spotify_user_id = %s AND artist_name = %s",
+        (req.spotify_id, req.artist_name)
+    )
+    conn.commit()
+    cur.close()
+    return {"ok": True}
 
 
 @app.get("/history")
