@@ -5,3 +5,4 @@ __pycache__/
 .claude/
 server.log
 .cache
+uvicorn.log
