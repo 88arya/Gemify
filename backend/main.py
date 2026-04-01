@@ -753,6 +753,18 @@ def get_recommendations(req: RecommendationsRequest):
     results.sort(key=lambda x: x["final_score"], reverse=True)
     results = results[:10]
 
+    # ── XGBoost score adjustment ──
+    seed_listeners = []
+    for name in req.artists:
+        lname = name.lower()
+        if lname in listeners_map:
+            seed_listeners.append(listeners_map[lname])
+    session_ctx = {
+        "avg_seed_listeners": float(np.mean(seed_listeners)) if seed_listeners else 0.0,
+        "seed_count": len(req.artists),
+    }
+    results = _xgb_adjust_scores(req.spotify_id, results, session_ctx)
+
     # ── Image lookup (top 10 only) ──
     # Pass 1: check Supabase cache
     try:
@@ -847,6 +859,7 @@ def get_recommendations(req: RecommendationsRequest):
         r.pop("sum_weight", None)
         r.pop("final_score", None)
         r.pop("popularity_factor", None)
+        r.pop("adjusted_score", None)
 
     return JSONResponse(
         content={"recommendations": results},
@@ -886,6 +899,56 @@ def delete_feedback(req: FeedbackRequest):
     conn.commit()
     cur.close()
     return {"ok": True}
+
+
+def _xgb_adjust_scores(spotify_id: str, candidates: list, session: dict) -> list:
+    """
+    Re-score top 10 candidates using XGBoost.
+    adjusted_score = final_score × xgb_multiplier
+    Falls back to original final_score if cold start or no model.
+    """
+    try:
+        from xgboost import XGBClassifier
+    except ImportError:
+        return candidates
+
+    try:
+        history = _get_user_history_features(spotify_id)
+        feedback_count = history["feedback_count"]
+
+        if feedback_count < 20:
+            return candidates  # cold start fallback
+
+        cur = get_cursor()
+        cur.execute(
+            "SELECT xgb_model FROM users WHERE spotify_id = %s",
+            (spotify_id,)
+        )
+        row = cur.fetchone()
+        cur.close()
+
+        if not row or not row["xgb_model"]:
+            return candidates  # no model yet
+
+        model = pickle.loads(bytes(row["xgb_model"]))
+        X = _build_feature_matrix(candidates, session, history)
+        probs = model.predict_proba(X)[:, 1]
+
+        for i, r in enumerate(candidates):
+            prob = float(probs[i])
+            if feedback_count < 50:
+                multiplier = 0.4 * prob + 0.6  # gentle blend
+            else:
+                multiplier = prob              # full adjustment
+            r["adjusted_score"] = round(r["final_score"] * multiplier, 4)
+
+        candidates.sort(key=lambda x: x["adjusted_score"], reverse=True)
+        logger.info(f"[xgb] adjusted scores for {spotify_id} (feedback={feedback_count})")
+        return candidates
+
+    except Exception as e:
+        logger.warning(f"[xgb] inference failed, using original scores: {e}")
+        return candidates
 
 
 def _retrain_model(spotify_id: str):
