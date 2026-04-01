@@ -12,34 +12,44 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 DB_PASSWORD = os.getenv("DB_PASSWORD")  # from .env locally, from GitHub secret in CI
 DATABASE_URL = f"postgresql://postgres.ocebzopndfyhrnzujlwo:{DB_PASSWORD}@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
 
-def scrape_page(url):
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-    r.raise_for_status()
-    r.encoding = 'utf-8'
-    soup = BeautifulSoup(r.text, "html.parser")
-    rows = []
-    for tr in soup.select("table tbody tr"):
-        cols = tr.find_all("td")
-        if len(cols) < 3:
-            continue
-        # col 0: rank, col 1: artist (with link), col 2: listeners
-        link = cols[1].find("a")
-        if not link:
-            continue
-        name = link.get_text(strip=True)
-        href = link.get("href", "")
-        # href format: artist/SPOTIFY_ID_songs.html
-        m = re.search(r"artist/([^_]+)_songs\.html", href)
-        spotify_id = m.group(1) if m else None
-        listeners_raw = cols[2].get_text(strip=True).replace(",", "")
-        if not listeners_raw.isdigit():
-            continue
-        rows.append((name, spotify_id, int(listeners_raw)))
-    return rows
+def scrape_page(url, retries=3):
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+            r.raise_for_status()
+            r.encoding = 'utf-8'
+            soup = BeautifulSoup(r.text, "html.parser")
+            rows = []
+            for tr in soup.select("table tbody tr"):
+                cols = tr.find_all("td")
+                if len(cols) < 3:
+                    continue
+                link = cols[1].find("a")
+                if not link:
+                    continue
+                name = link.get_text(strip=True)
+                href = link.get("href", "")
+                m = re.search(r"artist/([^_]+)_songs\.html", href)
+                spotify_id = m.group(1) if m else None
+                listeners_raw = cols[2].get_text(strip=True).replace(",", "")
+                if not listeners_raw.isdigit():
+                    continue
+                rows.append((name, spotify_id, int(listeners_raw)))
+            return rows
+        except Exception as e:
+            print(f"  Attempt {attempt}/{retries} failed for {url}: {e}")
+            if attempt < retries:
+                time.sleep(5 * attempt)
+    print(f"  Skipping {url} after {retries} failed attempts")
+    return []
 
 def main():
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=15)
     cur = conn.cursor()
+
+    # Raise statement timeout to 60s to avoid Supabase default cuts
+    cur.execute("SET statement_timeout = '60s'")
+    conn.commit()
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS artist_listeners (
@@ -61,7 +71,7 @@ def main():
         rows = scrape_page(url)
         print(f"  Got {len(rows)} rows")
         all_rows.extend(rows)
-        time.sleep(1)
+        time.sleep(2)
 
     records = [
         {"spotify_id": spotify_id, "name": name, "rank": rank, "listeners": listeners}
@@ -69,21 +79,25 @@ def main():
         if spotify_id
     ]
 
-    batch_size = 500
+    batch_size = 100
     for i in range(0, len(records), batch_size):
         batch = records[i:i + batch_size]
-        execute_values(cur, """
-            INSERT INTO artist_listeners (spotify_id, name, rank, listeners, updated_at)
-            VALUES %s
-            ON CONFLICT (spotify_id) DO UPDATE
-                SET name       = EXCLUDED.name,
-                    rank       = EXCLUDED.rank,
-                    listeners  = EXCLUDED.listeners,
-                    updated_at = NOW()
-        """, [(r["spotify_id"], r["name"], r["rank"], r["listeners"]) for r in batch],
-        template="(%s, %s, %s, %s, NOW())")
-        conn.commit()
-        print(f"  Inserted {min(i + batch_size, len(records))}/{len(records)}")
+        try:
+            execute_values(cur, """
+                INSERT INTO artist_listeners (spotify_id, name, rank, listeners, updated_at)
+                VALUES %s
+                ON CONFLICT (spotify_id) DO UPDATE
+                    SET name       = EXCLUDED.name,
+                        rank       = EXCLUDED.rank,
+                        listeners  = EXCLUDED.listeners,
+                        updated_at = NOW()
+            """, [(r["spotify_id"], r["name"], r["rank"], r["listeners"]) for r in batch],
+            template="(%s, %s, %s, %s, NOW())")
+            conn.commit()
+            print(f"  Inserted {min(i + batch_size, len(records))}/{len(records)}")
+        except Exception as e:
+            print(f"  Batch {i}-{i+batch_size} failed: {e}")
+            conn.rollback()
 
     cur.close()
     conn.close()
