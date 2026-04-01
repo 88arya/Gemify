@@ -94,7 +94,7 @@
       align-items: center;
       gap: 12px;
       padding: 6px 8px;
-      border-radius: 8px;
+      border-radius: 2px;
       transition: background 0.15s;
       user-select: none;
       min-width: 0;
@@ -102,8 +102,18 @@
     }
     .history-row:hover { background: #252525; }
     .history-row-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-    .history-row-name { font-size: 0.9rem; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .history-row-name { font-size: 0.9rem; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-decoration: none; }
+    .history-row-name:hover { text-decoration: underline; text-decoration-thickness: 1.25px; text-decoration-color: #fff; }
     .history-row-listeners { font-size: 0.75rem; color: #aaa; }
+    .history-row-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
+    .history-row-btn {
+      background: none; border: none; cursor: pointer; padding: 4px;
+      font-size: 0.85rem; color: #666; transition: color 0.15s, transform 0.1s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .history-row-btn:hover { transform: scale(1.2); }
+    .history-row-btn.liked { color: #c084fc; }
+    .history-row-btn.disliked { color: #c084fc; }
 
     .album-entry {
       display: flex;
@@ -278,7 +288,7 @@
       border-radius: 50%;
       cursor: pointer;
       background: #1f1f1f;
-      border: 1px solid #2a2a2a;
+      border: none;
       flex-shrink: 0;
       position: relative;
       display: flex;
@@ -459,7 +469,7 @@
       align-items: center;
       gap: 12px;
       padding: 5px 110px 5px 10px;
-      border-radius: 8px;
+      border-radius: 4px;
       transition: background 0.15s;
       user-select: none;
       min-width: 0;
@@ -656,7 +666,7 @@
       align-items: center;
       gap: 12px;
       padding: 5px 10px;
-      border-radius: 8px;
+      border-radius: 4px;
       cursor: pointer;
       transition: background 0.15s;
       user-select: none;
@@ -1130,7 +1140,17 @@
       : `<div class="artist-row-avatar-initials">${initials(rec.name)}</div>`;
     const listenerCount = rec.monthly_listeners || rec.listeners;
     const listeners = `<span class="history-row-listeners">${formatListeners(listenerCount)} monthly listeners</span>`;
-    row.innerHTML = `${img}<div class="history-row-info"><span class="history-row-name">${rec.name}</span>${listeners}</div>`;
+    row.innerHTML = `${img}<div class="history-row-info"><a class="history-row-name" href="https://open.spotify.com/search/${encodeURIComponent(rec.name)}" target="_blank">${rec.name}</a>${listeners}</div><div class="history-row-actions"><button class="history-row-btn heart"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><button class="history-row-btn dislike">✕</button></div>`;
+    row.querySelector(".heart").addEventListener("click", e => {
+      e.stopPropagation();
+      e.currentTarget.classList.toggle("liked");
+      row.querySelector(".dislike").classList.remove("disliked");
+    });
+    row.querySelector(".dislike").addEventListener("click", e => {
+      e.stopPropagation();
+      e.currentTarget.classList.toggle("disliked");
+      row.querySelector(".heart").classList.remove("liked");
+    });
     return row;
   }
 
