@@ -6,3 +6,5 @@ __pycache__/
 server.log
 .cache
 uvicorn.log
+model.txt
+spec.txt
