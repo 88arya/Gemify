@@ -9,7 +9,7 @@ import time
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-DB_PASSWORD = os.getenv("DB_PASSWORD")  # from .env locally, from GitHub secret in CI
+DB_PASSWORD = os.getenv("DB_PASSWORD")  # .env locally, GitHub secret in CI
 DATABASE_URL = f"postgresql://postgres.ocebzopndfyhrnzujlwo:{DB_PASSWORD}@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
 
 def scrape_page(url, retries=3):
@@ -47,7 +47,7 @@ def main():
     conn = psycopg2.connect(DATABASE_URL, connect_timeout=15)
     cur = conn.cursor()
 
-    # Raise statement timeout to 60s to avoid Supabase default cuts
+    # supabase default is lower
     cur.execute("SET statement_timeout = '60s'")
     conn.commit()
 

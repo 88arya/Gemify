@@ -38,10 +38,10 @@ ARTISTS_CACHE_TTL = 21600  # 6 hours
 
 _mbid_name_cache = {}  # mbid -> canonical name (MusicBrainz)
 
-# ── XGBoost helpers ──────────────────────────────────────────────────────────
+# xgboost
 
 def _get_user_history_features(spotify_id: str) -> dict:
-    """Query feedback + recommendations to compute per-user history features."""
+    """feedback + recs → per-user history features."""
     try:
         cur = get_cursor()
         cur.execute(
@@ -85,13 +85,7 @@ def _get_user_history_features(spotify_id: str) -> dict:
 
 
 def _build_feature_matrix(candidates: list, session: dict, history: dict) -> np.ndarray:
-    """
-    Build (N, 13) feature matrix for XGBoost inference or training.
-
-    candidates: list of recommendation dicts (with ML fields present)
-    session:    { avg_seed_listeners, seed_count }
-    history:    { feedback_count, avg_liked_listeners, liked_b1_rate }
-    """
+    """(N, 13) feature matrix for XGBoost inference/training."""
     rows = []
     for r in candidates:
         rows.append([
@@ -117,7 +111,6 @@ app = FastAPI()
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
-# Ensure recommendations table exists
 try:
     _init_cur = conn.cursor()
     _init_cur.execute("""
@@ -175,7 +168,7 @@ def callback(background_tasks: BackgroundTasks, code: str = None):
     conn.commit()
     cur.close()
 
-    # Always refresh on login in background — ensures new artists/images are picked up immediately
+    # refresh on login — picks up new artists/images
     _start_refresh(background_tasks, spotify_id, sp)
 
     return RedirectResponse(f"/app?spotify_id={spotify_id}")
@@ -331,10 +324,10 @@ def _fetch_and_cache_artists_inner(spotify_id: str, sp):
             logger.info(f"[artists] DB cache write failed: {e}")
             conn.rollback()
 
-    # Step 1: cache artists we already have images for
+    # cache artists with images
     cache_artists(ordered)
 
-    # Step 2: for artists missing images, check DB cache (only entries cached within 7 days)
+    # check DB cache for missing (7-day window)
     missing = [a for a in ordered if not a["image"]]
     if missing:
         try:
@@ -360,7 +353,7 @@ def _fetch_and_cache_artists_inner(spotify_id: str, sp):
             else:
                 still_missing.append(a)
 
-        # Step 3: fetch from Spotify for artists still missing images, then cache
+        # fetch remaining from Spotify + cache
         logger.info(f"[artists] {len(missing)} missing — {len(missing) - len(still_missing)} from DB cache, {len(still_missing)} fetching from Spotify")
         if still_missing:
             for a in still_missing:
@@ -379,7 +372,7 @@ def _fetch_and_cache_artists_inner(spotify_id: str, sp):
         a.pop("_fetch_error", None)
         a["score"] = round(a["score"], 1)
 
-    # Persist ranked list to DB so it survives server restarts
+    # persist to DB (survives restarts)
     cur = get_cursor()
     cur.execute(
         "UPDATE users SET artists_data = %s, artists_cached_at = NOW() WHERE spotify_id = %s",
@@ -402,7 +395,6 @@ def _start_refresh(background_tasks: BackgroundTasks, spotify_id: str, sp):
 def top_artists(spotify_id: str, background_tasks: BackgroundTasks):
     pending = spotify_id in _refresh_in_progress
 
-    # Check memory cache
     cached = _artists_cache.get(spotify_id)
     if cached:
         if time.time() - cached["ts"] >= ARTISTS_CACHE_TTL:
@@ -412,7 +404,7 @@ def top_artists(spotify_id: str, background_tasks: BackgroundTasks):
                 pending = True
         return {"total": len(cached["data"]), "artists": cached["data"], "refresh_pending": pending}
 
-    # Fall back to DB
+    # fallback to DB
     cur = get_cursor()
     cur.execute("SELECT artists_data, artists_cached_at FROM users WHERE spotify_id = %s", (spotify_id,))
     row = cur.fetchone()
@@ -556,11 +548,11 @@ def get_recommendations(req: RecommendationsRequest):
     G = nx.DiGraph()
     seed_lower = {a.lower() for a in req.artists}
 
-    # ── Batch 0 ──
+    # batch 0
     for a in req.artists:
         G.add_node(a, batch_number=0, sum_weight=1.0, seeds=[a])
 
-    # ── Batch 1 ──
+    # batch 1
     n_seed = len(req.artists)
     limit_b1 = 50 if n_seed == 1 else max(1, 100 // n_seed)
 
@@ -598,7 +590,7 @@ def get_recommendations(req: RecommendationsRequest):
     b1_all_lower = set(b1.keys())
     logger.info(f"[recs] b1 total={len(b1)} surviving={len(surviving_b1)}")
 
-    # ── Batch 2 ──
+    # batch 2
     b2_raw = []  # (parent, name, mbid, score)
     with ThreadPoolExecutor(max_workers=min(len(surviving_b1), 20)) as pool:
         futures = {pool.submit(_lastfm_similar, d["name"], 5, lastfm_key): d["name"] for d in surviving_b1}
@@ -607,7 +599,7 @@ def get_recommendations(req: RecommendationsRequest):
             for name, mbid, score in future.result():
                 nl = name.lower()
                 if nl in seed_lower or nl in b1_all_lower:
-                    # structural edge only for surviving b1 nodes
+                    # edge only for b1 survivors
                     if nl in surviving_b1_lower:
                         node_name = next(d["name"] for d in surviving_b1 if d["name"].lower() == nl)
                         G.add_edge(parent, node_name, weight=score)
@@ -639,7 +631,7 @@ def get_recommendations(req: RecommendationsRequest):
     surviving_b2 = above_b2 if len(above_b2) >= 10 else b2_sorted[:10]
     logger.info(f"[recs] b2 total={len(b2)} surviving={len(surviving_b2)}")
 
-    # ── Listener lookup pass 1 (raw Last.fm names) ──
+    # listener lookup — raw Last.fm names
     all_surviving = surviving_b1 + surviving_b2
     listeners_map = {}
     try:
@@ -656,7 +648,7 @@ def get_recommendations(req: RecommendationsRequest):
     except Exception as e:
         logger.info(f"[recs] listener pass 1 failed: {e}")
 
-    # ── MusicBrainz resolution for top 5 unmatched + any with non-standard chars ──
+    # MusicBrainz resolve: top 5 unmatched + non-standard chars
     _standard_chars = set("abcdefghijklmnopqrstuvwxyz0123456789 '-.")
     def _has_nonstandard(name):
         return any(c not in _standard_chars for c in name.lower())
@@ -674,7 +666,7 @@ def get_recommendations(req: RecommendationsRequest):
             d["canonical_name"] = resolved["name"] if resolved else d["name"]
             d["area"] = resolved.get("area") if resolved else None
 
-        # Pass 2: re-query with canonical names
+        # re-query with canonical names
         newly_resolved = [d for d in unmatched_top5 if d.get("canonical_name", d["name"]).lower() != d["name"].lower()]
         if newly_resolved:
             try:
@@ -695,7 +687,7 @@ def get_recommendations(req: RecommendationsRequest):
             except Exception as e:
                 logger.info(f"[recs] listener pass 2 failed: {e}")
 
-    # ── Pass 3: LIKE fuzzy lookup for non-standard char artists still unmatched ──
+    # fuzzy LIKE for still-unmatched non-standard names
     still_unmatched_ns = [
         d for d in unmatched_top5
         if _has_nonstandard(d["name"])
@@ -720,7 +712,7 @@ def get_recommendations(req: RecommendationsRequest):
         except Exception as e:
             logger.info(f"[recs] listener pass 3 failed: {e}")
 
-    # ── Popularity factor ──
+    # popularity factor
     def popularity_factor(listeners):
         peak, sl, sr = 2_000_000, 4_680_000, 1_930_000
         n = 0 if listeners is None else listeners
@@ -729,7 +721,7 @@ def get_recommendations(req: RecommendationsRequest):
         sigma = sl if n <= peak else sr
         return math.exp(-((n - peak) ** 2) / (2 * sigma ** 2))
 
-    # ── Score, filter, sort ──
+    # score, filter, sort
     results = []
     for d in all_surviving:
         if "&" in d["name"] or "," in d["name"]:
@@ -753,7 +745,7 @@ def get_recommendations(req: RecommendationsRequest):
     results.sort(key=lambda x: x["final_score"], reverse=True)
     results = results[:10]
 
-    # ── XGBoost score adjustment ──
+    # xgb score adjustment
     seed_listeners = []
     for name in req.artists:
         lname = name.lower()
@@ -765,8 +757,8 @@ def get_recommendations(req: RecommendationsRequest):
     }
     results = _xgb_adjust_scores(req.spotify_id, results, session_ctx)
 
-    # ── Image lookup (top 10 only) ──
-    # Pass 1: check Supabase cache
+    # image lookup (top 10)
+    # supabase cache
     try:
         names = [r["name"] for r in results]
         cur = get_cursor()
@@ -783,7 +775,7 @@ def get_recommendations(req: RecommendationsRequest):
         for r in results:
             r["image"] = None
 
-    # Pass 2: fetch from Spotify for any still missing, then cache
+    # fetch from Spotify + cache missing
     missing_image = [r for r in results if not r.get("image")]
     if missing_image:
         try:
@@ -821,7 +813,7 @@ def get_recommendations(req: RecommendationsRequest):
 
     logger.info(f"[recs] done — top 5: {[r['name'] for r in results]}")
 
-    # ── Save to recommendations table (before stripping, so ML features are available) ──
+    # save before strip — ML features needed
     exclude_lower = {n.lower() for n in req.exclude}
     display_results = [r for r in results if r["name"].lower() not in exclude_lower]
     try:
@@ -853,7 +845,7 @@ def get_recommendations(req: RecommendationsRequest):
         print(f"[recs] DB save failed: {e}", flush=True)
         conn.rollback()
 
-    # ── Strip internal fields ──
+    # strip internal fields
     for r in results:
         r.pop("batch", None)
         r.pop("sum_weight", None)
@@ -902,11 +894,7 @@ def delete_feedback(req: FeedbackRequest):
 
 
 def _xgb_adjust_scores(spotify_id: str, candidates: list, session: dict) -> list:
-    """
-    Re-score top 10 candidates using XGBoost.
-    adjusted_score = final_score × xgb_multiplier
-    Falls back to original final_score if cold start or no model.
-    """
+    """adjusted_score = final_score × xgb_multiplier. Falls back if cold start or no model."""
     try:
         from xgboost import XGBClassifier
     except ImportError:
@@ -952,11 +940,7 @@ def _xgb_adjust_scores(spotify_id: str, candidates: list, session: dict) -> list
 
 
 def _retrain_model(spotify_id: str):
-    """
-    Background task: retrain XGBoost model for this user from all labeled data.
-    Skips if fewer than 20 feedback rows exist.
-    Serialises model to users.xgb_model in DB.
-    """
+    """Background task. Skips if <20 labeled rows. Stores model in users.xgb_model."""
     try:
         from xgboost import XGBClassifier
     except ImportError:
@@ -966,7 +950,7 @@ def _retrain_model(spotify_id: str):
     try:
         cur = get_cursor()
 
-        # Pull all labeled rows joined with their recommendation features
+        # labeled rows + rec features
         cur.execute("""
             SELECT
                 r.sum_weight, r.batch_number, r.monthly_listeners,
@@ -991,7 +975,7 @@ def _retrain_model(spotify_id: str):
             cur.close()
             return
 
-        # Build history features from current liked rows
+        # history features from liked rows
         history = _get_user_history_features(spotify_id)
 
         X_list, y_list = [], []

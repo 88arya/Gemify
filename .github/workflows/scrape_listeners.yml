@@ -2,8 +2,8 @@ name: Monthly Listener Scrape
 
 on:
   schedule:
-    - cron: '0 0 1 * *'  # midnight UTC on the 1st of every month
-  workflow_dispatch:       # allow manual trigger from GitHub UI
+    - cron: '0 0 1 * *'  # 1st of month, midnight UTC
+  workflow_dispatch:
 
 jobs:
   scrape:

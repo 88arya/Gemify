@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import os
 load_dotenv()
 DB_PASSWORD = os.getenv("DB_PASSWORD")
-# Use direct connection (port 5432) to bypass pgBouncer statement timeout
+# port 5432 bypasses pgBouncer timeout
 conn = psycopg2.connect(
     f"postgresql://postgres.ocebzopndfyhrnzujlwo:{DB_PASSWORD}@aws-1-us-east-1.pooler.supabase.com:5432/postgres",
     connect_timeout=15

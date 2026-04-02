@@ -991,7 +991,7 @@
   const selected = new Map();
   let allArtists = [];
 
-  // Populate avatar synchronously before first async paint
+  // avatar before first paint
   const _cachedAvatar = sessionStorage.getItem("user-avatar");
   if (_cachedAvatar) document.getElementById("user-avatar-img").src = _cachedAvatar;
   const _cachedName = sessionStorage.getItem("user-display-name");
@@ -999,7 +999,7 @@
 
   if (spotifyId) localStorage.setItem("spotify_id", spotifyId);
 
-  // Fresh login redirect — drop stale session cache so we always fetch latest data
+  // fresh login — clear stale cache
   if (params.get("spotify_id")) {
     sessionStorage.removeItem(`top-artists-${spotifyId}`);
     sessionStorage.removeItem("user-avatar");
@@ -1011,7 +1011,7 @@
     document.getElementById("login-screen").style.display = "none";
     document.getElementById("app-screen").style.display = "flex";
 
-    // Render cached artists immediately (synchronous, before any async/extension interference)
+    // render cached artists before async
     const _cacheKey = `top-artists-${spotifyId}`;
     try {
       const _cached = sessionStorage.getItem(_cacheKey);
@@ -1034,7 +1034,7 @@
     await Promise.all([loadUser(), loadArtists(), loadRecommendationHistory()]);
   }
 
-  // ── User profile ──
+  // user profile
   async function loadUser() {
     const avatarImg = document.getElementById("user-avatar-img");
     const tooltip = document.getElementById("user-avatar-tooltip");
@@ -1074,7 +1074,7 @@
     window.location.href = "/app";
   });
 
-  // ── Saved recommendations ──
+  // saved recommendations
   async function loadSavedRecommendations() {
     try {
       const res = await fetch(`/history?spotify_id=${spotifyId}`);
@@ -1083,7 +1083,7 @@
     } catch {}
   }
 
-  // ── Albums sidebar ──
+  // albums sidebar
   async function loadAlbums() {
     try {
       const res = await fetch(`/albums?spotify_id=${spotifyId}`);
@@ -1144,7 +1144,7 @@
     return entry;
   }
 
-  // ── Recommendation history (left sidebar) ──
+  // recommendation history
   async function loadRecommendationHistory() {
     try {
       const res = await fetch(`/history?spotify_id=${spotifyId}`);
@@ -1194,7 +1194,7 @@
     return row;
   }
 
-  // ── Recommendations ──
+  // recommendations
   document.getElementById("btn-save").addEventListener("click", async () => {
     if (selected.size === 0) return;
     const recsArea = document.getElementById("recs-area");
@@ -1302,7 +1302,7 @@
   }
 
 
-  // ── Dots menu ──
+  // dots menu
   document.getElementById("dots-btn").addEventListener("click", e => {
     e.stopPropagation();
     document.getElementById("dots-dropdown").classList.toggle("open");
@@ -1326,7 +1326,7 @@
     for (const artistId of [...selected.keys()]) deselectArtist(artistId);
   });
 
-  // ── Artists ──
+  // artists
   async function loadArtists() {
     try {
       const cacheKey = `top-artists-${spotifyId}`;
@@ -1355,7 +1355,7 @@
       list.innerHTML = "";
       for (const artist of artists) list.appendChild(buildRow(artist));
 
-      // Poll until the background refresh finishes, then re-render with fresh data
+      // poll until background refresh, then re-render
       if (refresh_pending) pollForRefresh(cacheKey);
     } catch (e) {
       document.getElementById("loading").innerHTML = `<p style="color:#e74c3c">Failed to load artists.</p>`;
