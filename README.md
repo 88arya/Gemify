@@ -1,93 +1,77 @@
 # Gemify
 
-Spotify-based artist recommendation engine.
+Gemify is a music discovery app that finds artists you'll actually like — not just more of what you already listen to. Unlike Spotify's recommendation algorithm, which optimizes for engagement and familiar sounds, Gemify uses a graph-based pipeline seeded by your own taste to surface genuinely new artists, then gets sharper over time as you give feedback.
 
----
+## How It Works
 
-## What it does
+1. **Authenticate** with Spotify — your followed artists and listening history are used to build your taste profile.
+2. **Select seed artists** from your top and followed artists.
+3. **Recommendation pipeline** expands outward in two graph batches using Last.fm similarity data:
+   - **Batch 1:** Similar artists to your seeds, aggregated and weighted by similarity score
+   - **Batch 2:** Similar artists to the Batch 1 survivors, filtered for novelty
+4. **Popularity scoring** ranks results using a Gaussian curve that peaks around 2M Spotify listeners — rewarding artists who are popular enough to be worth discovering, but not already everywhere.
+5. **Personalization** kicks in after 20+ likes/dislikes — a per-user XGBoost model re-ranks future recommendations based on your feedback history.
+6. **Save artists** you want to revisit into named albums.
 
-You log in with Spotify. The app scores your listening history across multiple time ranges and lets you seed a recommendation engine with artists you pick. It builds a 3-layer similarity graph via Last.fm and returns 5 ranked artist recommendations. A feedback system (like/dislike) trains an XGBoost model to personalize results over time.
+## Tech Stack
 
----
+| Layer | Tech |
+|-------|------|
+| Backend | FastAPI + Uvicorn |
+| Database | PostgreSQL (Supabase) |
+| Graph | NetworkX (directed graph for recommendation pipeline) |
+| ML | XGBoost (per-user classifier) |
+| APIs | Spotify, Last.fm, MusicBrainz, kworb.net (scraped) |
+| Frontend | Vanilla JS, single-page app |
 
-## Tech stack
+## Getting Started
 
-- **Frontend:** Vanilla JS / HTML / CSS
-- **Backend:** FastAPI (Python)
-- **Database:** PostgreSQL via Supabase
-- **APIs:** Spotify, Last.fm, MusicBrainz
-- **ML:** XGBoost, NetworkX
-- **Scraper:** BeautifulSoup (kworb.net listener counts)
+> [!NOTE]
+> As of Feb 2026, Spotify has restricted the ability to deploy web applications. As a result, Gemify must be run locally and requires Spotify Premium.
 
----
+### Prerequisites
 
-## How the recommendation works
+- Python 3.10+
+- A Supabase PostgreSQL database
+- API credentials for Spotify and Last.fm
 
-Starting from your selected seed artists, the engine runs 3 batches of Last.fm similar-artist lookups, building a directed graph where edge weights decay by batch depth. Each candidate is scored by aggregating weighted path strengths, then adjusted by a popularity factor derived from a Gaussian curve over monthly listener counts — this pushes results toward artists with similar popularity to your seeds rather than always surfacing the most-streamed names.
-
-Once you've liked or disliked 20+ artists, an XGBoost classifier trained on your feedback history adjusts each score by a learned probability multiplier. Below 20 ratings, the raw graph score is used as-is (cold start fallback). Between 20–49, a blended multiplier softens the ML influence until there's enough signal.
-
----
-
-## Setup
+### Install dependencies
 
 ```bash
-git clone https://github.com/88arya/Gemify.git
-cd Gemify
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
-Create a `.env` file in the root directory:
+### Environment variables
 
-```
-DB_PASSWORD=your_supabase_password
+Create `backend/.env`:
+
+```env
 SPOTIFY_CLIENT_ID=your_spotify_client_id
 SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+SPOTIFY_REDIRECT_URI=http://localhost:8000/callback
 LASTFM_API_KEY=your_lastfm_api_key
+DB_PASSWORD=your_supabase_db_password
 ```
 
-Run the server:
+### Run
 
 ```bash
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-Open: [http://127.0.0.1:8000/app](http://127.0.0.1:8000/app)
+Open `http://localhost:8000/app` in your browser and log in with Spotify.
 
----
-
-## Environment variables
-
-| Variable | Description |
-|---|---|
-| `DB_PASSWORD` | Supabase PostgreSQL password |
-| `SPOTIFY_CLIENT_ID` | Spotify developer app client ID |
-| `SPOTIFY_CLIENT_SECRET` | Spotify developer app client secret |
-| `LASTFM_API_KEY` | Last.fm API key |
-
----
-
-## Repo structure
+## Repository Layout
 
 ```
 Gemify/
 ├── backend/
-│   ├── main.py                    FastAPI app — routes, recommendation engine, ML pipeline
-│   ├── db.py                      Supabase connection
-│   ├── spotify_oauth.py           Spotify OAuth flow
+│   ├── main.py              # FastAPI app — all endpoints and pipeline logic
+│   ├── db.py                # Database connection
+│   ├── migrate.py           # Schema migration utility
 │   └── scraper/
-│       └── scrape_listeners.py    kworb.net monthly listener scraper (runs via CI)
+│       └── scrape_listeners.py  # kworb.net listener count scraper
 ├── frontend/
-│   └── index.html                 single-page app (vanilla JS)
-└── .github/
-    └── workflows/
-        └── scrape_listeners.yml   monthly cron job (1st of each month)
+│   └── index.html           # Single-page app (vanilla JS)
+└── requirements.txt
 ```
-
----
-
-## Notes
-
-- XGBoost personalisation kicks in after 20 liked/disliked artists
-- Monthly listener data is scraped and cached via a GitHub Actions cron job
-- Single-user design — built for personal local deployment
