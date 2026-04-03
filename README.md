@@ -63,12 +63,12 @@ Open `http://localhost:8000/app` in your browser and log in with Spotify.
 ```
 Gemify/
 ├── backend/
-│   ├── main.py              
-│   ├── db.py                
-│   ├── migrate.py          
+│   ├── main.py              # API endpoints, recommendation pipeline
+│   ├── db.py                # Database connection
+│   ├── migrate.py           # Schema migrations
 │   └── scraper/
-│       └── scrape_listeners.py  
+│       └── scrape_listeners.py  # Scrapes artist listener counts from kworb.net
 ├── frontend/
-│   └── index.html           
+│   └── index.html           # Single-page app
 └── requirements.txt
 ```
