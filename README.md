@@ -1,28 +1,24 @@
 # Gemify
 
-Gemify is a music discovery app that finds artists you'll actually like — not just more of what you already listen to. Unlike Spotify's recommendation algorithm, which optimizes for engagement and familiar sounds, Gemify uses a graph-based pipeline seeded by your own taste to surface genuinely new artists, then gets sharper over time as you give feedback.
+Gemify is an artist recommendation web app focused on discovering underground artists tailored to your taste.  Unlike Spotify, which largely promotes popular or trending artists, Gemify prioritizes lesser-known artists that closely match your listening preferences. As you interact with recommendations, the algorithm learns your preferences over time and continuously improves future suggestions.
 
 ## How It Works
 
-1. **Authenticate** with Spotify — your followed artists and listening history are used to build your taste profile.
-2. **Select seed artists** from your top and followed artists.
-3. **Recommendation pipeline** expands outward in two graph batches using Last.fm similarity data:
-   - **Batch 1:** Similar artists to your seeds, aggregated and weighted by similarity score
-   - **Batch 2:** Similar artists to the Batch 1 survivors, filtered for novelty
-4. **Popularity scoring** ranks results using a Gaussian curve that peaks around 2M Spotify listeners — rewarding artists who are popular enough to be worth discovering, but not already everywhere.
-5. **Personalization** kicks in after 20+ likes/dislikes — a per-user XGBoost model re-ranks future recommendations based on your feedback history.
-6. **Save artists** you want to revisit into named albums.
+1. Authenticate with Spotify to retrieve your top artists and build your initial taste profile.
+2. Select seed artists that best represent your music preferences.
+3. Candidates are generated in stages, first finding artists similar to your seeds, then exploring artists similar to those results.
+4. Candidates are ranked using a combination of similarity and popularity.
+5. After 20 likes or dislikes, recommendation weights are adjusted to better match your taste.
 
 ## Tech Stack
 
 | Layer | Tech |
 |-------|------|
 | Backend | FastAPI + Uvicorn |
-| Database | PostgreSQL (Supabase) |
-| Graph | NetworkX (directed graph for recommendation pipeline) |
-| ML | XGBoost (per-user classifier) |
-| APIs | Spotify, Last.fm, MusicBrainz, kworb.net (scraped) |
-| Frontend | Vanilla JS, single-page app |
+| Database | Supabase |
+| Recommendation Algorithm | NetworkX + XGBoost |
+| APIs | Spotify, Last.fm, MusicBrainz |
+| Frontend | Vanilla JS |
 
 ## Getting Started
 
@@ -32,7 +28,7 @@ Gemify is a music discovery app that finds artists you'll actually like — not 
 ### Prerequisites
 
 - Python 3.10+
-- A Supabase PostgreSQL database
+- Supabase database
 - API credentials for Spotify and Last.fm
 
 ### Install dependencies
@@ -46,11 +42,11 @@ pip install -r requirements.txt
 Create `backend/.env`:
 
 ```env
-SPOTIFY_CLIENT_ID=your_spotify_client_id
-SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
-SPOTIFY_REDIRECT_URI=http://localhost:8000/callback
-LASTFM_API_KEY=your_lastfm_api_key
-DB_PASSWORD=your_supabase_db_password
+SPOTIFY_CLIENT_ID=
+SPOTIFY_CLIENT_SECRET=
+SPOTIFY_REDIRECT_URI=
+LASTFM_API_KEY=
+DB_PASSWORD=
 ```
 
 ### Run
@@ -66,12 +62,12 @@ Open `http://localhost:8000/app` in your browser and log in with Spotify.
 ```
 Gemify/
 ├── backend/
-│   ├── main.py              # FastAPI app — all endpoints and pipeline logic
-│   ├── db.py                # Database connection
-│   ├── migrate.py           # Schema migration utility
+│   ├── main.py              
+│   ├── db.py                
+│   ├── migrate.py          
 │   └── scraper/
-│       └── scrape_listeners.py  # kworb.net listener count scraper
+│       └── scrape_listeners.py  
 ├── frontend/
-│   └── index.html           # Single-page app (vanilla JS)
+│   └── index.html           
 └── requirements.txt
 ```
