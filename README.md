@@ -8,7 +8,7 @@ Gemify is an artist recommendation web app focused on discovering underground ar
 2. Select seed artists that best represent your music preferences.
 3. Candidates are generated in stages, first finding artists similar to your seeds, then exploring artists similar to those results.
 4. Candidates are ranked using a combination of similarity and popularity.
-5. After 20 likes or dislikes, recommendation weights are adjusted to better match your taste.
+5. After 20 likes or dislikes, recommendation weights are constantly adjusted to better match your taste.
 
 ## Tech Stack
 
