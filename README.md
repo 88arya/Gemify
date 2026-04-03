@@ -19,6 +19,7 @@ Gemify is an artist recommendation web app focused on discovering underground ar
 | Recommendation Algorithm | NetworkX + XGBoost |
 | APIs | Spotify, Last.fm, MusicBrainz |
 | Frontend | Vanilla JS |
+| Scraping | Beautiful Soup |
 
 ## Getting Started
 
@@ -52,7 +53,7 @@ DB_PASSWORD=
 ### Run
 
 ```bash
-uvicorn backend.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
 Open `http://localhost:8000/app` in your browser and log in with Spotify.
