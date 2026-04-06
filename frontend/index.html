@@ -29,7 +29,18 @@
     }
 
     #login-screen h1 { font-size: 3rem; font-weight: 800; letter-spacing: -1px; }
-    #login-screen h1 span { color: #c084fc; }
+    #login-screen h1 {
+      background: linear-gradient(110deg, #c084fc 0%, #fff 45%, #c084fc 100%);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: shine 5s linear infinite;
+    }
+    @keyframes shine {
+      0%   { background-position: 200% center; }
+      100% { background-position: -200% center; }
+    }
     #login-screen p { color: #aaa; font-size: 1.1rem; }
 
     .btn-spotify {
@@ -873,7 +884,7 @@
 
 <!-- Login -->
 <div id="login-screen">
-  <h1>Gem<span>ify</span></h1>
+  <h1>Gemify</h1>
   <a class="btn-spotify" href="/login">
     <svg viewBox="0 0 24 24" fill="currentColor">
       <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.622.622 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 01.207.857zm1.223-2.722a.78.78 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 01-.973-.519.781.781 0 01.52-.974c3.632-1.252 8.147-.568 11.233 1.329a.78.78 0 01.257 1.073zm.255-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 11-.543-1.794c3.532-1.072 9.404-.865 13.115 1.339a.937.937 0 01-.955 1.612z"/>
