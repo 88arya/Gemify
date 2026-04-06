@@ -818,7 +818,7 @@ def get_recommendations(req: RecommendationsRequest):
     display_results = [r for r in results if r["name"].lower() not in exclude_lower]
     try:
         cur = get_cursor()
-        for rank, r in enumerate(display_results[:5], start=1):
+        for rank, r in enumerate(results[:5], start=1):
             cur.execute("""
                 INSERT INTO recommendations (
                     spotify_user_id, name, image_url, monthly_listeners, rank,
@@ -1035,7 +1035,13 @@ def _retrain_model(spotify_id: str):
 def get_recommendation_history(spotify_id: str):
     cur = get_cursor()
     cur.execute(
-        "SELECT name, image_url, monthly_listeners FROM recommendations WHERE spotify_user_id = %s ORDER BY added_at DESC LIMIT 100",
+        """SELECT r.name, r.image_url, r.monthly_listeners, f.label AS feedback
+           FROM recommendations r
+           LEFT JOIN feedback f
+             ON f.spotify_user_id = r.spotify_user_id
+            AND LOWER(f.artist_name) = LOWER(r.name)
+           WHERE r.spotify_user_id = %s
+           ORDER BY r.added_at DESC LIMIT 100""",
         (spotify_id,)
     )
     recs = [dict(row) for row in cur.fetchall()]
