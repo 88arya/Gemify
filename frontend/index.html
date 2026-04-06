@@ -1154,13 +1154,46 @@
     return entry;
   }
 
-  // recommendation history
+  // recommendation history — localStorage is source of truth
+  const _histCacheKey = `gemify_rec_history_${spotifyId}`;
+
+  function _loadHistCache() {
+    try { return JSON.parse(localStorage.getItem(_histCacheKey)) || []; } catch { return []; }
+  }
+
+  function _saveHistCache(recs) {
+    try { localStorage.setItem(_histCacheKey, JSON.stringify(recs)); } catch {}
+  }
+
+  function _mergeIntoHistCache(newRecs) {
+    const existing = _loadHistCache();
+    const map = new Map(existing.map(r => [r.name.toLowerCase(), r]));
+    // new recs go to front (prepend order preserved by reversing)
+    for (const r of [...newRecs].reverse()) {
+      map.delete(r.name.toLowerCase());
+      map.set(r.name.toLowerCase(), r); // will be at end; we re-sort below
+    }
+    // rebuild: newRecs first (in original order), then the rest
+    const newNames = new Set(newRecs.map(r => r.name.toLowerCase()));
+    const merged = [
+      ...newRecs,
+      ...existing.filter(r => !newNames.has(r.name.toLowerCase()))
+    ];
+    _saveHistCache(merged);
+    return merged;
+  }
+
   async function loadRecommendationHistory() {
     try {
       const res = await fetch(`/history?spotify_id=${spotifyId}`);
       const data = await res.json();
-      renderRecommendationHistory(data.recommendations || []);
-    } catch {}
+      const dbRecs = data.recommendations || [];
+      const merged = _mergeIntoHistCache(dbRecs);
+      renderRecommendationHistory(merged);
+    } catch {
+      const cached = _loadHistCache();
+      if (cached.length) renderRecommendationHistory(cached);
+    }
   }
 
   function renderRecommendationHistory(recs) {
@@ -1232,15 +1265,8 @@
       const filtered = (data.recommendations || []).filter(r => !userArtistNames.has(r.name.toLowerCase())).slice(0, 5);
       recsList.querySelector(".rec-loading")?.remove();
       renderRecommendations(filtered, false);
-      const histList = document.getElementById("album-list");
-      const newNames = new Set(filtered.map(r => r.name.toLowerCase()));
-      histList.querySelectorAll(".history-row").forEach(row => {
-        const name = row.querySelector(".history-row-name")?.textContent?.toLowerCase();
-        if (name && newNames.has(name)) row.remove();
-      });
-      for (let i = filtered.length - 1; i >= 0; i--) {
-        histList.prepend(buildHistoryRow(filtered[i]));
-      }
+      const merged = _mergeIntoHistCache(filtered);
+      renderRecommendationHistory(merged);
     } catch {
       clearInterval(msgInterval);
       recsList.innerHTML = `<p style="color:#e74c3c;padding:16px">Failed to load recommendations.</p>`;
