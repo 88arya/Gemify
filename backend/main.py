@@ -5,7 +5,7 @@ from pydantic import BaseModel
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 import psycopg2
-from db import conn, DATABASE_URL
+from backend.db import conn, DATABASE_URL
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 import logging
