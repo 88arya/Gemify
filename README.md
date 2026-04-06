@@ -1,5 +1,7 @@
 # Gemify
 
+https://github.com/user-attachments/assets/7833d37c-c2e1-4bc7-9b44-d25e99c8c99c
+
 Gemify is an artist recommendation web app focused on discovering underground artists tailored to your taste.  Unlike Spotify, which largely promotes popular or trending artists, Gemify prioritizes lesser-known artists that closely match your listening preferences. As you interact with recommendations, the algorithm learns your preferences over time and continuously improves future suggestions.
 
 ## How It Works
