@@ -1183,6 +1183,17 @@
     return merged;
   }
 
+  function _updateFeedbackInCache(artistName, label) {
+    const cached = _loadHistCache();
+    for (const r of cached) {
+      if (r.name.toLowerCase() === artistName.toLowerCase()) {
+        r.feedback = label;
+        break;
+      }
+    }
+    _saveHistCache(cached);
+  }
+
   async function loadRecommendationHistory() {
     try {
       const res = await fetch(`/history?spotify_id=${spotifyId}`);
@@ -1213,11 +1224,12 @@
       : `<div class="artist-row-avatar-initials">${initials(rec.name)}</div>`;
     const listenerCount = rec.monthly_listeners || rec.listeners;
     const listeners = `<span class="history-row-listeners">${formatListeners(listenerCount)} monthly listeners</span>`;
-    row.innerHTML = `${img}<div class="history-row-info"><a class="history-row-name" href="https://open.spotify.com/search/${encodeURIComponent(rec.name)}" target="_blank">${rec.name}</a>${listeners}</div><div class="history-row-actions"><button class="history-row-btn heart"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><button class="history-row-btn dislike">✕</button></div>`;
+    row.innerHTML = `${img}<div class="history-row-info"><a class="history-row-name" href="https://open.spotify.com/search/${encodeURIComponent(rec.name)}" target="_blank">${rec.name}</a>${listeners}</div><div class="history-row-actions"><button class="history-row-btn heart${rec.feedback === 1 ? ' liked' : ''}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><button class="history-row-btn dislike${rec.feedback === 0 ? ' disliked' : ''}">✕</button></div>`;
     row.querySelector(".heart").addEventListener("click", e => {
       e.stopPropagation();
       const isLiked = e.currentTarget.classList.toggle("liked");
       row.querySelector(".dislike").classList.remove("disliked");
+      _updateFeedbackInCache(rec.name, isLiked ? 1 : null);
       fetch("/feedback", {
         method: isLiked ? "POST" : "DELETE",
         headers: { "Content-Type": "application/json" },
@@ -1228,6 +1240,7 @@
       e.stopPropagation();
       const isDisliked = e.currentTarget.classList.toggle("disliked");
       row.querySelector(".heart").classList.remove("liked");
+      _updateFeedbackInCache(rec.name, isDisliked ? 0 : null);
       fetch("/feedback", {
         method: isDisliked ? "POST" : "DELETE",
         headers: { "Content-Type": "application/json" },
